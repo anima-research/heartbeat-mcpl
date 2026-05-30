@@ -1,0 +1,11 @@
+{
+  "name": "@connectome/heartbeat-mcpl",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "bin": { "heartbeat-mcpl": "./dist/src/index.js" },
+  "scripts": { "build": "tsc", "clean": "rm -rf dist" },
+  "dependencies": { "@connectome/mcpl-core": "file:../mcpl-core-ts" },
+  "devDependencies": { "typescript": "^5.5.0", "@types/node": "^20.0.0" },
+  "engines": { "node": ">=20.0.0" }
+}

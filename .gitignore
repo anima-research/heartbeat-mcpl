@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.tsbuildinfo
+*.log
+# per-instance runtime state, not source
+heartbeat-config.json
