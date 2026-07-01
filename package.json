@@ -1,15 +1,24 @@
 {
   "name": "@connectome/heartbeat-mcpl",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "main": "./dist/src/index.js",
-  "bin": { "heartbeat-mcpl": "./dist/src/index.js" },
+  "bin": {
+    "heartbeat-mcpl": "./dist/src/index.js"
+  },
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
     "test": "npm run build && ../mcpl-harness/node_modules/.bin/tsx test/reminders.harness.mjs"
   },
-  "dependencies": { "@connectome/mcpl-core": "file:../mcpl-core-ts" },
-  "devDependencies": { "typescript": "^5.5.0", "@types/node": "^20.0.0" },
-  "engines": { "node": ">=20.0.0" }
+  "dependencies": {
+    "@connectome/mcpl-core": "file:../mcpl-core-ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
 }
