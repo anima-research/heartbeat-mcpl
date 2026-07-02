@@ -249,7 +249,11 @@ class HeartbeatServer {
 
   private fire(reason: string): void {
     if (this.config.paused && reason === 'schedule') return;
-    this.emitPush(this.config.message, { source: 'heartbeat', reason }, 'heartbeat');
+    // Prefix the current time so each heartbeat is temporally anchored — without
+    // it every heartbeat is byte-identical, giving the agent no sense of "when"
+    // (and identical repeats invite confabulation/looping).
+    const now = new Date().toISOString();
+    this.emitPush(`[current time: ${now}] ${this.config.message}`, { source: 'heartbeat', reason }, 'heartbeat');
     log(`fired heartbeat (${reason})`);
   }
 
