@@ -20,5 +20,13 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anima-research/heartbeat-mcpl.git"
+  },
+  "homepage": "https://github.com/anima-research/heartbeat-mcpl#readme",
+  "bugs": {
+    "url": "https://github.com/anima-research/heartbeat-mcpl/issues"
   }
 }
