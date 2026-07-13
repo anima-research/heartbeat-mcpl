@@ -16,11 +16,11 @@
  *
  * Usage: heartbeat-mcpl --stdio
  */
-import { McplConnection, method } from '@connectome/mcpl-core';
+import { McplConnection, method } from '@animalabs/mcpl-core';
 import type {
   FeatureSetDeclaration, McplCapabilities, McplInitializeParams,
   McplInitializeResult, InitializeCapabilities, PushEventParams, JsonRpcId,
-} from '@connectome/mcpl-core';
+} from '@animalabs/mcpl-core';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 
 const CONFIG_PATH = process.env.HEARTBEAT_CONFIG_FILE ?? './heartbeat-config.json';
