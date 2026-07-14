@@ -1,6 +1,6 @@
 {
   "name": "@animalabs/heartbeat-mcpl",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "main": "./dist/src/index.js",
   "bin": {
@@ -9,10 +9,10 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "npm run build && ../mcpl-harness/node_modules/.bin/tsx test/reminders.harness.mjs"
+    "test": "npm run build"
   },
   "dependencies": {
-    "@animalabs/mcpl-core": "file:../mcpl-core-ts"
+    "@animalabs/mcpl-core": "^0.2.1"
   },
   "devDependencies": {
     "typescript": "^5.5.0",
