@@ -22,10 +22,12 @@ import type {
   McplInitializeResult, InitializeCapabilities, PushEventParams, JsonRpcId,
 } from '@animalabs/mcpl-core';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { formatAgentDateTime, resolveAgentTimeZone } from './timezone.js';
 
 const CONFIG_PATH = process.env.HEARTBEAT_CONFIG_FILE ?? './heartbeat-config.json';
 const REMINDERS_PATH = process.env.HEARTBEAT_REMINDERS_FILE ?? './heartbeat-reminders.json';
 const FS_NAME = 'heartbeat';
+const AGENT_TIME_ZONE = resolveAgentTimeZone();
 // setTimeout overflows past 2^31-1 ms (~24.8 days) and fires immediately; clamp
 // long waits and re-check on wake so far-future reminders still fire on time.
 const MAX_TIMEOUT_MS = 2_147_483_647;
@@ -252,7 +254,7 @@ class HeartbeatServer {
     // Prefix the current time so each heartbeat is temporally anchored — without
     // it every heartbeat is byte-identical, giving the agent no sense of "when"
     // (and identical repeats invite confabulation/looping).
-    const now = new Date().toISOString();
+    const now = formatAgentDateTime(new Date(), AGENT_TIME_ZONE);
     this.emitPush(`[current time: ${now}] ${this.config.message}`, { source: 'heartbeat', reason }, 'heartbeat');
     log(`fired heartbeat (${reason})`);
   }
@@ -346,7 +348,7 @@ class HeartbeatServer {
   private describeReminder(rem: Reminder, now: number): string {
     const inS = Math.max(0, Math.round((rem.fireAt - now) / 1000));
     const rec = rem.everySeconds !== null ? `repeats every ${rem.everySeconds}s` : 'one-shot';
-    return `next ${new Date(rem.fireAt).toISOString()} (~${inS}s) | ${rec} | "${rem.message}"`;
+    return `next ${formatAgentDateTime(rem.fireAt, AGENT_TIME_ZONE)} (~${inS}s) | ${rec} | "${rem.message}"`;
   }
 
   private listRemindersText(): string {
