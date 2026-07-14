@@ -25,6 +25,14 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # mcpl-harness is not published to npm; test/reminders.harness.mjs loads
+      # HostSession from a sibling checkout (../mcpl-harness). Clone it and
+      # install its runtime deps so `npm test` can drive the e2e harness.
+      - name: Checkout mcpl-harness (e2e test harness)
+        run: |
+          git clone --depth 1 https://github.com/anima-research/mcpl-harness.git ../mcpl-harness
+          npm install --prefix ../mcpl-harness --omit=dev --no-audit --no-fund
+
       - name: Build
         run: npm run build
 

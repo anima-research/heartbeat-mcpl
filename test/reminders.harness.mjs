@@ -7,15 +7,30 @@
 //   3. a pending reminder survives a server restart
 //
 // Run:  node --import tsx test/reminders.harness.mjs   (from the heartbeat-mcpl dir)
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const HARNESS = '/home/luxia/projects/connectome-ecosystem/mcpl-harness/src/session.ts';
-const { HostSession } = await import(HARNESS);
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
+
+// mcpl-harness is not published to npm, so HostSession is loaded from a
+// checkout. Resolution order: $MCPL_HARNESS_SESSION (explicit path to
+// src/session.ts), then a sibling checkout next to this repo (what CI clones
+// — see .github/workflows/publish.yml), then known dev-box locations.
+const HARNESS_CANDIDATES = [
+  process.env.MCPL_HARNESS_SESSION,
+  join(HERE, '..', '..', 'mcpl-harness', 'src', 'session.ts'),
+  '/home/luxia/projects/connectome-ecosystem/mcpl-harness/src/session.ts',
+].filter(Boolean);
+const HARNESS = HARNESS_CANDIDATES.find((p) => existsSync(p));
+if (!HARNESS) {
+  console.error('[reminders.harness] mcpl-harness checkout not found. Tried:');
+  for (const p of HARNESS_CANDIDATES) console.error(`  - ${p}`);
+  console.error('Clone https://github.com/anima-research/mcpl-harness next to this repo (and npm install there), or set MCPL_HARNESS_SESSION.');
+  process.exit(1);
+}
+const { HostSession } = await import(pathToFileURL(HARNESS).href);
 const SERVER = join(HERE, '..', 'dist', 'src', 'index.js');
 
 const dir = mkdtempSync(join(tmpdir(), 'hb-a4-'));

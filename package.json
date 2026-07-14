@@ -9,12 +9,13 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "npm run build"
+    "test": "npm run build && node --import tsx --test test/timezone.test.ts && node --import tsx test/reminders.harness.mjs"
   },
   "dependencies": {
     "@animalabs/mcpl-core": "^0.2.1"
   },
   "devDependencies": {
+    "tsx": "^4.7.0",
     "typescript": "^5.5.0",
     "@types/node": "^20.0.0"
   },
