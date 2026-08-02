@@ -6,6 +6,12 @@
 //   2. recurring fires on cadence; cancel silences it
 //   3. a pending reminder survives a server restart
 //
+// Since MCPL 0.5 the server delivers no push/event until the host has sent the
+// initial policy as a Request (SPEC §5.3) — so this test sends it, and asserts
+// the degradation receipt that comes back (§6.7). `session.updateFeatureSets()`
+// is the Notification form and deliberately cannot establish ready state, hence
+// `session.raw(...)` here.
+//
 // Run:  node --import tsx test/reminders.harness.mjs   (from the heartbeat-mcpl dir)
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -61,9 +67,31 @@ const env = { HEARTBEAT_REMINDERS_FILE: remindersFile, HEARTBEAT_CONFIG_FILE: co
 let session = new HostSession({ command: 'node', args: [SERVER, '--stdio'], env, autoApprove: true });
 attach(session);
 
+const POLICY = {
+  effectiveCapabilities: ['tools', 'pushEvents'],
+  deniedCapabilities: [],
+  enabled: ['heartbeat'],
+  disabled: [],
+};
+/** Send the initial policy as a Request and return the degradation receipt. */
+const sendPolicy = (params = POLICY) => session.raw('featureSets/update', params);
+
 try {
   await session.start();
   console.log('# heartbeat-mcpl reminder scheduler — e2e via mcpl-harness\n');
+
+  // ── 0. initial policy: featureSets/update Request → degradation receipt ──
+  console.log('0) no wake is delivered before policy; featureSets/update is answered with a receipt');
+  const preText = (await session.callTool('heartbeat_trigger', {}))?.content?.[0]?.text ?? '';
+  check(/NOT delivered/.test(preText), `trigger before policy reports non-delivery (${preText.slice(0, 80)}…)`);
+
+  const receipt = await sendPolicy();
+  check(receipt?.accepted === true, `receipt accepted (${JSON.stringify(receipt)})`);
+  check(receipt?.mode === 'full', `mode=full with the full grant (${receipt?.mode})`);
+  check(Array.isArray(receipt?.unavailableFeatures) && receipt.unavailableFeatures.length === 0,
+    'nothing reported unavailable');
+  const postText = (await session.callTool('heartbeat_trigger', {}))?.content?.[0]?.text ?? '';
+  check(/Heartbeat fired/.test(postText), 'trigger after policy delivers the wake');
 
   // ── 1. one-shot fires exactly once ──────────────────────────────────────
   console.log('1) one-shot reminder fires exactly once');
@@ -93,6 +121,9 @@ try {
   check(count('SURV') === 0, 'not yet fired before restart');
   await sleep(1500);
   await session.restart(); // respawn: server must reload reminders from disk
+  // A restart is a fresh connection, so the grant starts empty again (§5.3).
+  const receiptAfterRestart = await sendPolicy();
+  check(receiptAfterRestart?.accepted === true, 'policy re-established after restart');
   check(count('SURV') === 0, 'still not fired right after restart');
   await sleep(9000); // ~10.5s after add > 8s due
   check(count('SURV') === 1, 'reminder fired once after restart (survived from disk)');
