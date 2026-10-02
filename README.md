@@ -7,7 +7,9 @@ On a configurable interval, sends a `push/event` (featureSet `heartbeat`,
 itself configures its own schedule via three MCP tools:
 
 - `heartbeat_status` — show current interval, paused state, time-to-next, message
-- `heartbeat_configure` — set `intervalSeconds | intervalMinutes | intervalHours`, `paused`, `message`; persists across restarts
+- `heartbeat_configure` — set `intervalSeconds | intervalMinutes | intervalHours`, `paused`, `deliveryMode`, `message`; persists across restarts
+  - `deliveryMode: "message"` sends the timestamped configured prompt (legacy/default)
+  - `deliveryMode: "silent"` emits an empty, authenticated heartbeat wake; a supporting host supplies ephemeral private context and suppresses automatic prose
 - `heartbeat_trigger` — fire one heartbeat now (test/debug)
 
 Schedule is persisted to `${HEARTBEAT_CONFIG_FILE:-./heartbeat-config.json}`.

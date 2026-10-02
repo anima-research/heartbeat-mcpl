@@ -41,10 +41,12 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
 // spamming the agent, while still allowing brisk test cadences.
 const MIN_REMINDER_SECONDS = 5;
 
-interface HeartbeatConfig { intervalSeconds: number; paused: boolean; message: string; }
+type HeartbeatDeliveryMode = 'message' | 'silent';
+interface HeartbeatConfig { intervalSeconds: number; paused: boolean; message: string; deliveryMode: HeartbeatDeliveryMode; }
 const DEFAULT_CONFIG: HeartbeatConfig = {
   intervalSeconds: 4 * 60 * 60,
   paused: false,
+  deliveryMode: 'message',
   message: '[heartbeat] Periodic self-check-in. Review anything pending — reminders, schedules, follow-ups — and act if needed; otherwise a brief note to yourself is fine.',
 };
 
@@ -60,8 +62,13 @@ interface Reminder {
 
 function log(...a: unknown[]): void { console.error('[heartbeat-mcpl]', ...a); }
 function loadConfig(): HeartbeatConfig {
-  try { if (existsSync(CONFIG_PATH)) return { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) }; }
-  catch (e) { log('config read failed:', (e as Error).message); }
+  try {
+    if (existsSync(CONFIG_PATH)) {
+      const merged = { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) } as HeartbeatConfig;
+      if (merged.deliveryMode !== 'message' && merged.deliveryMode !== 'silent') merged.deliveryMode = 'message';
+      return merged;
+    }
+  } catch (e) { log('config read failed:', (e as Error).message); }
   return { ...DEFAULT_CONFIG };
 }
 function saveConfig(c: HeartbeatConfig): void {
@@ -118,13 +125,14 @@ const toolDefinitions = [
   { name: 'heartbeat_status', description: 'Show your current heartbeat schedule (interval, paused state, time to next wake, message) and how many reminders are pending.',
     inputSchema: { type: 'object' as const, properties: {} } },
   { name: 'heartbeat_configure',
-    description: 'Change your own ambient heartbeat schedule. Provide any of: intervalSeconds | intervalMinutes | intervalHours, paused, message. Persists across restarts. (Reminders are separate — see reminder_add.)',
+    description: 'Change your own ambient heartbeat schedule. Provide any of: intervalSeconds | intervalMinutes | intervalHours, paused, deliveryMode, message. Persists across restarts. (Reminders are separate — see reminder_add.)',
     inputSchema: { type: 'object' as const, properties: {
       intervalSeconds: { type: 'number', description: 'Wake interval in seconds (min 60).' },
       intervalMinutes: { type: 'number', description: 'Wake interval in minutes (alternative).' },
       intervalHours: { type: 'number', description: 'Wake interval in hours (alternative).' },
       paused: { type: 'boolean', description: 'Pause (true) or resume (false) heartbeats.' },
-      message: { type: 'string', description: 'The text delivered to you on each heartbeat.' },
+      deliveryMode: { type: 'string', enum: ['message', 'silent'], description: 'message = durable prompt; silent = ephemeral private tick with no durable message or automatic prose.' },
+      message: { type: 'string', description: 'The text delivered to you in message mode.' },
     } } },
   { name: 'heartbeat_trigger', description: 'Fire an ambient heartbeat immediately (does not change the schedule).',
     inputSchema: { type: 'object' as const, properties: {} } },
@@ -330,7 +338,7 @@ class HeartbeatServer {
     const c = this.config;
     const remaining = this.nextFireAt ? Math.max(0, Math.round((this.nextFireAt - Date.now()) / 1000)) : null;
     const blocked = this.pushBlockedReason();
-    return `Heartbeat ${c.paused ? 'PAUSED' : 'ACTIVE'} | interval=${c.intervalSeconds}s (${(c.intervalSeconds / 3600).toFixed(2)}h)` +
+    return `Heartbeat ${c.paused ? 'PAUSED' : 'ACTIVE'} | mode=${c.deliveryMode} | interval=${c.intervalSeconds}s (${(c.intervalSeconds / 3600).toFixed(2)}h)` +
       (c.paused || remaining === null ? '' : ` | next in ~${remaining}s`) +
       ` | reminders=${this.reminders.length}` +
       // Surfaced to the agent deliberately: if wakes cannot be delivered, the
@@ -349,6 +357,7 @@ class HeartbeatServer {
         if (typeof args.intervalMinutes === 'number') { this.config.intervalSeconds = Math.max(60, Math.round(args.intervalMinutes * 60)); changed = true; }
         if (typeof args.intervalSeconds === 'number') { this.config.intervalSeconds = Math.max(60, Math.round(args.intervalSeconds)); changed = true; }
         if (typeof args.paused === 'boolean') { this.config.paused = args.paused; changed = true; }
+        if (args.deliveryMode === 'message' || args.deliveryMode === 'silent') { this.config.deliveryMode = args.deliveryMode; changed = true; }
         if (typeof args.message === 'string' && args.message.trim()) { this.config.message = args.message; changed = true; }
         if (changed) { saveConfig(this.config); this.reschedule(); }
         return this.text((changed ? 'Updated. ' : 'No changes. ') + this.statusText());
@@ -386,8 +395,14 @@ class HeartbeatServer {
     // it every heartbeat is byte-identical, giving the agent no sense of "when"
     // (and identical repeats invite confabulation/looping).
     const now = formatAgentDateTime(new Date(), AGENT_TIME_ZONE);
-    const sent = this.emitPush(`[current time: ${now}] ${this.config.message}`, { source: 'heartbeat', reason }, 'heartbeat');
-    log(`${sent ? 'fired' : 'DROPPED'} heartbeat (${reason})`);
+    const silent = this.config.deliveryMode === 'silent';
+    const sent = this.emitPush(
+      silent ? '' : `[current time: ${now}] ${this.config.message}`,
+      { source: 'heartbeat', reason, ...(silent ? { silent: true, scheduledAt: now } : {}) },
+      'heartbeat',
+      silent,
+    );
+    log(`${sent ? 'fired' : 'DROPPED'} heartbeat (${reason}${silent ? ', silent' : ''})`);
   }
 
   /** Shared push/event emission for both heartbeats and reminders. Push events
@@ -402,7 +417,7 @@ class HeartbeatServer {
    *
    *  Returns whether the event actually went out, so callers do not log "fired"
    *  over a wake that was suppressed. */
-  private emitPush(text: string, origin: Record<string, unknown>, kind: string): boolean {
+  private emitPush(text: string, origin: Record<string, unknown>, kind: string, silent = false): boolean {
     const conn = this.conn;
     if (!conn) return false;
     const blocked = this.pushBlockedReason();
@@ -412,7 +427,7 @@ class HeartbeatServer {
       eventId: `${kind}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       timestamp: new Date().toISOString(),
       origin,
-      payload: { content: [{ type: 'text', text }] },
+      payload: { content: silent ? [] : [{ type: 'text', text }] },
     };
     conn.sendRequest(method.PUSH_EVENT, params)
       .then((r) => {
