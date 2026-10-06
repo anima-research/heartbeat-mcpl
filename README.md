@@ -9,10 +9,39 @@ itself configures its own schedule via three MCP tools:
 - `heartbeat_status` — show current interval, paused state, time-to-next, message
 - `heartbeat_configure` — set `intervalSeconds | intervalMinutes | intervalHours`, `paused`, `deliveryMode`, `message`; persists across restarts
   - `deliveryMode: "message"` sends the timestamped configured prompt (legacy/default)
-  - `deliveryMode: "silent"` emits an empty, authenticated heartbeat wake; a supporting host supplies ephemeral private context and suppresses automatic prose
+  - `deliveryMode: "silent"` emits an empty, authenticated heartbeat wake; a supporting host supplies ephemeral private context and suppresses automatic prose (see [Silent mode](#silent-mode) for what it requires)
 - `heartbeat_trigger` — fire one heartbeat now (test/debug)
 
 Schedule is persisted to `${HEARTBEAT_CONFIG_FILE:-./heartbeat-config.json}`.
+
+## Silent mode
+
+A silent tick is an empty `push/event` carrying the host's silent-heartbeat
+marker: feature set `heartbeat`, `origin.source: "heartbeat"`,
+`origin.silent: true`, no content. The host turns it into a private wake with
+no stored message only when **both** of these hold:
+
+- the host is agent-framework **0.20.0 or later**, which includes silent heartbeat
+  wakes (anima-research/agent-framework#216);
+- this server is configured under the id **`heartbeat`**, the `mcpServers` key
+  in the recipe below. The host matches the marker on that exact server id. This
+  server always sets the feature set and origin fields correctly, but the id
+  comes from your configuration.
+
+Otherwise the marker is only an empty push, with nothing in it for the agent to read:
+
+- **Hosts that reject empty pushes** answer with JSON-RPC `-32602`. These are
+  agent-framework releases that include anima-research/agent-framework#236.
+  This server then re-sends that tick in message mode: the timestamped
+  configured prompt, with `origin.silentFallback: true`. It logs one `WARNING`
+  per process, and `heartbeat_status` reports
+  `mode=silent (host refused the empty silent push; …)`. Every tick tries
+  silent first.
+- **Older hosts accept the empty push** and wake the agent with nothing new to
+  read. The agent then often invents a cause for the wake. Hosts do not
+  advertise silent-wake support, so this server cannot detect this case. Check
+  both requirements before you switch to silent mode, and use
+  `deliveryMode: "message"` on hosts that do not meet them.
 
 ## Recipe wiring
 

@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "npm run build && node --import tsx --test test/timezone.test.ts test/policy.test.ts && node --import tsx test/reminders.harness.mjs"
+    "test": "npm run build && node --import tsx --test test/timezone.test.ts test/policy.test.ts test/silent-delivery.test.ts && node --import tsx test/reminders.harness.mjs"
   },
   "dependencies": {
     "@animalabs/mcpl-core": "^0.2.1"
