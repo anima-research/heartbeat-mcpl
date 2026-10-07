@@ -22,6 +22,7 @@ import type {
 } from '@animalabs/mcpl-core';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { formatAgentDateTime, resolveAgentTimeZone } from './timezone.js';
+import { sendSilentWithFallback } from './silent-delivery.js';
 import {
   EMPTY_GRANT, buildReceipt, deriveFeatureSetState, narrowGrant, parsePolicy,
 } from './mcpl05.js';
@@ -61,6 +62,8 @@ interface Reminder {
 }
 
 function log(...a: unknown[]): void { console.error('[heartbeat-mcpl]', ...a); }
+/** The silent-mode fallback is explained once per process, not on every tick. */
+let silentFallbackExplained = false;
 function loadConfig(): HeartbeatConfig {
   try {
     if (existsSync(CONFIG_PATH)) {
@@ -173,6 +176,9 @@ class HeartbeatServer {
   /** §5.3/§6.7: only a Request-form featureSets/update establishes ready state.
    *  Until then every capability-dependent behavior is unavailable. */
   private policyReady = false;
+  /** The host refused the most recent silent tick as an empty push, so it
+   *  went out in message mode (see silent-delivery.ts). */
+  private silentFellBack = false;
 
   async serve(conn: McplConnection): Promise<void> {
     this.conn = conn;
@@ -338,7 +344,10 @@ class HeartbeatServer {
     const c = this.config;
     const remaining = this.nextFireAt ? Math.max(0, Math.round((this.nextFireAt - Date.now()) / 1000)) : null;
     const blocked = this.pushBlockedReason();
-    return `Heartbeat ${c.paused ? 'PAUSED' : 'ACTIVE'} | mode=${c.deliveryMode} | interval=${c.intervalSeconds}s (${(c.intervalSeconds / 3600).toFixed(2)}h)` +
+    const mode = c.deliveryMode === 'silent' && this.silentFellBack
+      ? 'silent (host refused the empty silent push; ticks fall back to message mode)'
+      : c.deliveryMode;
+    return `Heartbeat ${c.paused ? 'PAUSED' : 'ACTIVE'} | mode=${mode} | interval=${c.intervalSeconds}s (${(c.intervalSeconds / 3600).toFixed(2)}h)` +
       (c.paused || remaining === null ? '' : ` | next in ~${remaining}s`) +
       ` | reminders=${this.reminders.length}` +
       // Surfaced to the agent deliberately: if wakes cannot be delivered, the
@@ -395,14 +404,58 @@ class HeartbeatServer {
     // it every heartbeat is byte-identical, giving the agent no sense of "when"
     // (and identical repeats invite confabulation/looping).
     const now = formatAgentDateTime(new Date(), AGENT_TIME_ZONE);
+    const text = `[current time: ${now}] ${this.config.message}`;
     const silent = this.config.deliveryMode === 'silent';
-    const sent = this.emitPush(
-      silent ? '' : `[current time: ${now}] ${this.config.message}`,
-      { source: 'heartbeat', reason, ...(silent ? { silent: true, scheduledAt: now } : {}) },
-      'heartbeat',
-      silent,
-    );
+    const sent = silent
+      ? this.emitSilentHeartbeat(reason, now, text)
+      : this.emitPush(text, { source: 'heartbeat', reason }, 'heartbeat');
     log(`${sent ? 'fired' : 'DROPPED'} heartbeat (${reason}${silent ? ', silent' : ''})`);
+  }
+
+  /** Silent tick: the empty marker push, falling back to message mode for this
+   *  tick when the host refuses it as empty (wrong server id, or a host
+   *  without silent wakes that rejects empty pushes). */
+  private emitSilentHeartbeat(reason: string, now: string, text: string): boolean {
+    const conn = this.conn;
+    if (!conn) return false;
+    const blocked = this.pushBlockedReason();
+    if (blocked) { log(`suppressed heartbeat push/event — ${blocked}`); return false; }
+    sendSilentWithFallback(
+      (params) => conn.sendRequest(method.PUSH_EVENT, params),
+      this.pushParams('heartbeat', { source: 'heartbeat', reason, silent: true, scheduledAt: now }, []),
+      () => this.pushParams('heartbeat', { source: 'heartbeat', reason, silentFallback: true }, [{ type: 'text', text }]),
+    )
+      .then((outcome) => {
+        this.silentFellBack = outcome.delivered === 'message';
+        if (outcome.delivered === 'message' && !silentFallbackExplained) {
+          silentFallbackExplained = true;
+          log(`WARNING: the host refused the silent heartbeat as an empty push (${outcome.rejection}). `
+            + 'Silent ticks are being delivered in message mode instead. Silent mode needs agent-framework >= 0.20.0 '
+            + 'with this server configured under the id "heartbeat" (see README). Logged once per process.');
+        }
+        this.logPushResult(outcome.result, 'heartbeat');
+      })
+      .catch((e) => log('push failed (heartbeat):', (e as Error).message));
+    return true;
+  }
+
+  private pushParams(kind: string, origin: Record<string, unknown>, content: Array<{ type: 'text'; text: string }>): PushEventParams {
+    return {
+      featureSet: FS_NAME,
+      eventId: `${kind}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      timestamp: new Date().toISOString(),
+      origin,
+      payload: { content },
+    };
+  }
+
+  private logPushResult(r: unknown, kind: string): void {
+    // §9.3 result, or §6.6 rejection. Either is diagnostics: it is recorded
+    // so a dropped wake is visible, and it changes no grant here — a
+    // rejection never re-grants or re-negotiates anything (§6.6).
+    const accepted = (r as { accepted?: unknown } | null)?.accepted;
+    if (accepted === false) log(`push/event NOT accepted (${kind}):`, JSON.stringify(r));
+    else log('push response:', JSON.stringify(r));
   }
 
   /** Shared push/event emission for both heartbeats and reminders. Push events
@@ -417,27 +470,13 @@ class HeartbeatServer {
    *
    *  Returns whether the event actually went out, so callers do not log "fired"
    *  over a wake that was suppressed. */
-  private emitPush(text: string, origin: Record<string, unknown>, kind: string, silent = false): boolean {
+  private emitPush(text: string, origin: Record<string, unknown>, kind: string): boolean {
     const conn = this.conn;
     if (!conn) return false;
     const blocked = this.pushBlockedReason();
     if (blocked) { log(`suppressed ${kind} push/event — ${blocked}`); return false; }
-    const params: PushEventParams = {
-      featureSet: FS_NAME,
-      eventId: `${kind}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      timestamp: new Date().toISOString(),
-      origin,
-      payload: { content: silent ? [] : [{ type: 'text', text }] },
-    };
-    conn.sendRequest(method.PUSH_EVENT, params)
-      .then((r) => {
-        // §9.3 result, or §6.6 rejection. Either is diagnostics: it is recorded
-        // so a dropped wake is visible, and it changes no grant here — a
-        // rejection never re-grants or re-negotiates anything (§6.6).
-        const accepted = (r as { accepted?: unknown } | null)?.accepted;
-        if (accepted === false) log(`push/event NOT accepted (${kind}):`, JSON.stringify(r));
-        else log('push response:', JSON.stringify(r));
-      })
+    conn.sendRequest(method.PUSH_EVENT, this.pushParams(kind, origin, [{ type: 'text', text }]))
+      .then((r) => this.logPushResult(r, kind))
       .catch((e) => log(`push failed (${kind}):`, (e as Error).message));
     return true;
   }
