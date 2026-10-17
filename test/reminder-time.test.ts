@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseReminderTime } from '../src/reminder-time.js';
+import { FIRST_REMINDER_TIME, LAST_REMINDER_TIME, canHoldTime, parseReminderTime } from '../src/reminder-time.js';
+import { serverWithHost } from './scripted-host.js';
 
 for (const [label, time, zone, expected] of [
   ['winter', '2024-01-15T09:00:00', 'America/New_York', '2024-01-15T14:00:00Z'],
@@ -194,5 +195,67 @@ test('invalid calendar dates and forms other than an ISO calendar date are refus
         && error.message.includes('Without one, the time is read in America/New_York'),
       time,
     );
+  }
+});
+
+test('a reminder can hold exactly the times a Date can, both ends included, and the range is named by those ends', () => {
+  assert.equal(canHoldTime(8.64e15), true);
+  assert.equal(canHoldTime(8.64e15 + 1), false);
+  assert.equal(canHoldTime(-8.64e15), true);
+  assert.equal(canHoldTime(-8.64e15 - 1), false);
+  assert.equal(canHoldTime(Infinity), false);
+  assert.equal(canHoldTime(Number.NaN), false);
+  // The refusals and log lines name the range with these, and the log test
+  // builds its expected lines from them, so they're pinned here.
+  assert.equal(Date.parse(FIRST_REMINDER_TIME), -8.64e15);
+  assert.equal(Date.parse(LAST_REMINDER_TIME), 8.64e15);
+});
+
+test('the log keeps each reminder a stored time drops or ends, whole, with the range', async () => {
+  const now = Date.now();
+  const row = (id: string, fireAt: number | null, everySeconds: number | null) =>
+    ({ id, message: `the message of ${id}`, createdAt: now, fireAt, everySeconds });
+  // Past the range, the null JSON wrote for an infinite time, and below the
+  // range: each dropped at load. And a recurring reminder whose next time is
+  // past the last one, which ends once the host takes its push.
+  const dropped = [row('rem_far', now + 1e16, null), row('rem_null', null, null), row('rem_low', -9e15, 60)];
+  const last = row('rem_last', now + 1000, 1e13);
+  const h = await serverWithHost(() => ({}), { reminders: [...dropped, last] });
+  try {
+    await h.pushCount(1);
+    const ended = `[heartbeat-mcpl] ended recurring reminder ${JSON.stringify(last)}: its next time, ${last.fireAt + 1e13 * 1000}, `
+      + `is past ${LAST_REMINDER_TIME}, the last time a reminder can hold`;
+    // The end is logged once the server has read the host's answer, a little after the push.
+    for (const deadline = Date.now() + 5_000; !h.stderr().split('\n').includes(ended) && Date.now() < deadline;) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const lines = h.stderr().split('\n');
+    for (const r of dropped) {
+      const line = `[heartbeat-mcpl] dropped reminder ${JSON.stringify(r)}: its stored time is outside the times a reminder can hold, `
+        + `${FIRST_REMINDER_TIME} to ${LAST_REMINDER_TIME}`;
+      assert.ok(lines.includes(line), `expected the log line\n${line}\nin\n${h.stderr()}`);
+    }
+    assert.ok(lines.includes(ended), `expected the log line\n${ended}\nin\n${h.stderr()}`);
+  } finally {
+    h.close();
+  }
+});
+
+test('a stored row dropped for its time stays in the file until the next save, which leaves it out', async () => {
+  const now = Date.now();
+  const row = (id: string, fireAt: number | null) =>
+    ({ id, message: `the message of ${id}`, createdAt: now, fireAt, everySeconds: null });
+  const rows = [row('rem_far', now + 1e16), row('rem_null', null), row('rem_ok', now + 3_600_000)];
+  const h = await serverWithHost(() => ({}), { reminders: rows });
+  try {
+    // Once the list answers, the file has been read and the rows dropped.
+    assert.doesNotMatch(await h.call('reminder_list'), /rem_far|rem_null/);
+    assert.deepEqual(h.stored(), rows, 'loading writes nothing');
+    await h.call('reminder_add', { message: 'later', inHours: 2 });
+    const ids = h.stored().map((r) => r.id);
+    assert.equal(ids.length, 2, `the save leaves the dropped rows out: ${JSON.stringify(ids)}`);
+    assert.ok(ids.includes('rem_ok'));
+  } finally {
+    h.close();
   }
 });

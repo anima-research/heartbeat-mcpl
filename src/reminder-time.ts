@@ -1,6 +1,16 @@
 const DAY_MS = 86_400_000;
 const MAX_DATE_MS = 8_640_000_000_000_000;
 
+/** The first and last instants a Date, and so a reminder, can hold. */
+export const FIRST_REMINDER_TIME = '-271821-04-20T00:00:00Z';
+export const LAST_REMINDER_TIME = '+275760-09-13T00:00:00Z';
+
+/** Whether a reminder can hold this time: a Date can, so it can be listed and
+ *  logged. Every time a reminder is saved with passes this. */
+export function canHoldTime(ms: number): boolean {
+  return Math.abs(ms) <= MAX_DATE_MS;
+}
+
 /** What atIso accepts, for its refusals. */
 const accepted = (timeZone: string) => 'Use a calendar date YYYY-MM-DD (or an expanded year, ±YYYYYY-MM-DD),'
   + ' optionally with a time THH:MM, THH:MM:SS or THH:MM:SS.fff, which can end in Z or a UTC offset ±hh, ±hh:mm or ±hhmm.'

@@ -119,6 +119,24 @@ test('a recurring reminder the host refuses is tried again an interval after eac
   assert.notEqual((h.stored()[0] as { fireAt: number }).fireAt, fireAt, 'and it has advanced in the file');
 });
 
+test('a recurring reminder whose next time is past the last one ends only once the host takes its push', async (t) => {
+  let refuse = true;
+  const seeded = row('rem_last', Date.now() - 1000, 1e13);
+  const h = await serverWithHost(() => (refuse ? { result: { accepted: false, reason: 'busy' } } : {}), { reminders: [seeded] });
+  t.after(h.close);
+  await h.pushCount(1);
+  await listed(h, /^rem_last \| .*the host refused it: busy/m);
+  assert.deepEqual(h.stored(), [seeded], 'refused, the file holds it as it was');
+  assert.doesNotMatch(h.stderr(), /ended recurring reminder/, 'refused, it has not ended');
+
+  refuse = false;
+  await h.request('featureSets/update', POLICY);
+  await h.pushCount(2);
+  await listed(h, /^No reminders set\.$/);
+  assert.deepEqual(h.stored(), [], 'taken, it ends, and the file leaves it out');
+  assert.ok(h.stderr().includes(`ended recurring reminder ${JSON.stringify(seeded)}: `), `its row in the log:\n${h.stderr()}`);
+});
+
 test('a refused reminder is tried once more at a Notification and at a cancel, not at a malformed Notification, and a malformed Request clears its refusal', async (t) => {
   const fireAt = Date.now() - 1000;
   const h = await serverWithHost((p) => (origin(p).reminderId === 'rem_once' ? { result: { accepted: false, reason: 'busy' } } : {}),

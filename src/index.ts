@@ -25,7 +25,7 @@ import { formatAgentDateTime, resolveAgentTimeZone } from './timezone.js';
 import { sendSilentWithFallback } from './silent-delivery.js';
 import { sendPush } from './push.js';
 import { formatReminderText } from './reminder-text.js';
-import { parseReminderTime } from './reminder-time.js';
+import { FIRST_REMINDER_TIME, LAST_REMINDER_TIME, canHoldTime, parseReminderTime } from './reminder-time.js';
 import { callAt } from './timer.js';
 import {
   EMPTY_GRANT, buildReceipt, deriveFeatureSetState, narrowGrant, parsePolicy,
@@ -52,14 +52,37 @@ const DEFAULT_CONFIG: HeartbeatConfig = {
   message: '[heartbeat] Periodic self-check-in. Review anything pending — reminders, schedules, follow-ups — and act if needed; otherwise a brief note to yourself is fine.',
 };
 
-/** A scheduled wake. `everySeconds === null` ⇒ one-shot (dropped after it fires);
- *  otherwise `fireAt` advances by the interval after each fire. */
+/** A scheduled wake. `everySeconds === null` ⇒ one-shot, removed once the host
+ *  takes its push; otherwise `fireAt` advances to its next future time each
+ *  time the host takes one, and the reminder ends instead once that would pass
+ *  the last time a reminder can hold. */
 interface Reminder {
   id: string;
   message: string;
   createdAt: number; // epoch ms
   fireAt: number;    // epoch ms — the next time this reminder is due
   everySeconds: number | null; // recurrence interval; null = one-shot
+}
+
+/** A reminder's delay or interval: the field it was read from, the value given
+ *  there, and its length in seconds. */
+interface Span { field: string; value: number; seconds: number; }
+
+/** Read a delay (inHours|inMinutes|inSeconds) or an interval
+ *  (everyHours|everyMinutes|everySeconds), in seconds floored at
+ *  MIN_REMINDER_SECONDS. When several units are given, the smallest unit wins
+ *  (seconds over minutes over hours, whatever their values), as before.
+ *  Returns null when that one isn't a positive number. A length past what a
+ *  number can hold reads as Infinity, for reminder_add to refuse by name. */
+function readSpan(args: Record<string, unknown>, prefix: 'in' | 'every'): Span | null {
+  let span: Span | null = null;
+  for (const [unit, seconds] of [['Hours', 3600], ['Minutes', 60], ['Seconds', 1]] as const) {
+    const field = `${prefix}${unit}`;
+    const value = args[field];
+    if (typeof value === 'number') span = { field, value, seconds: value * seconds };
+  }
+  if (span === null || !(span.seconds > 0)) return null;
+  return { ...span, seconds: Math.max(MIN_REMINDER_SECONDS, Math.round(span.seconds)) };
 }
 
 function log(...a: unknown[]): void { console.error('[heartbeat-mcpl]', ...a); }
@@ -100,15 +123,18 @@ function saveConfig(c: HeartbeatConfig): void {
   catch (e) { log('config write failed:', (e as Error).message); }
 }
 
+/** A reminder as the file may hold it: earlier versions saved a time too large
+ *  for a number, which JSON writes as null. */
+type StoredReminder = Omit<Reminder, 'fireAt'> & { fireAt: number | null };
 /** Structural guard so a corrupt/hand-edited reminders file can't crash the
  *  server or inject malformed entries — bad rows are dropped, good ones kept. */
-function isReminder(x: unknown): x is Reminder {
+function isStoredReminder(x: unknown): x is StoredReminder {
   if (typeof x !== 'object' || x === null) return false;
   const r = x as Record<string, unknown>;
   return typeof r.id === 'string'
     && typeof r.message === 'string'
     && typeof r.createdAt === 'number'
-    && typeof r.fireAt === 'number'
+    && (r.fireAt === null || typeof r.fireAt === 'number')
     && (r.everySeconds === null || typeof r.everySeconds === 'number');
 }
 function loadReminders(): Reminder[] {
@@ -116,11 +142,23 @@ function loadReminders(): Reminder[] {
     if (existsSync(REMINDERS_PATH)) {
       const parsed = JSON.parse(readFileSync(REMINDERS_PATH, 'utf8')) as unknown;
       if (Array.isArray(parsed)) {
+        // A stored time outside a Date's range can't be listed, since formatting
+        // it throws, and that took reminder_list down for every reminder. One
+        // past the range, or the null JSON wrote for one too large for a number,
+        // could never fire; reminder_add saved such times before it checked
+        // them. One below the range is dropped the same way. The log line keeps
+        // the row, message and all, since the next save leaves it out of the file.
+        const holdable = parsed.filter(isStoredReminder).filter((r): r is Reminder => {
+          if (r.fireAt !== null && canHoldTime(r.fireAt)) return true;
+          log(`dropped reminder ${JSON.stringify(r)}: its stored time is outside the times a reminder can hold, `
+            + `${FIRST_REMINDER_TIME} to ${LAST_REMINDER_TIME}`);
+          return false;
+        });
         // A stored interval means what reminder_add would have made of it: 0
         // or less is no interval, so the reminder is a one-off, and under
         // MIN_REMINDER_SECONDS is raised to it. Before, 0 or less fired again
         // at once on every advance, about every millisecond.
-        return parsed.filter(isReminder).map((r) => {
+        return holdable.map((r) => {
           if (r.everySeconds === null || r.everySeconds >= MIN_REMINDER_SECONDS) return r;
           if (r.everySeconds <= 0) {
             log(`reminder ${r.id}: stored interval ${r.everySeconds}s is no interval; it fires once`);
@@ -566,44 +604,20 @@ class HeartbeatServer {
 
   // ── Reminders ──
 
-  /** Parse a recurrence interval (everyHours|everyMinutes|everySeconds) to
-   *  seconds, floored at MIN_REMINDER_SECONDS. Returns null if none supplied. */
-  private parseEvery(args: Record<string, unknown>): number | null {
-    let s: number | null = null;
-    if (typeof args.everyHours === 'number') s = args.everyHours * 3600;
-    if (typeof args.everyMinutes === 'number') s = args.everyMinutes * 60;
-    if (typeof args.everySeconds === 'number') s = args.everySeconds;
-    if (s === null) return null;
-    if (!Number.isFinite(s) || s <= 0) return null;
-    return Math.max(MIN_REMINDER_SECONDS, Math.round(s));
-  }
-
-  /** Parse a relative delay (inHours|inMinutes|inSeconds) to seconds, floored at
-   *  MIN_REMINDER_SECONDS. Returns null if none supplied. */
-  private parseDelay(args: Record<string, unknown>): number | null {
-    let s: number | null = null;
-    if (typeof args.inHours === 'number') s = args.inHours * 3600;
-    if (typeof args.inMinutes === 'number') s = args.inMinutes * 60;
-    if (typeof args.inSeconds === 'number') s = args.inSeconds;
-    if (s === null) return null;
-    if (!Number.isFinite(s) || s <= 0) return null;
-    return Math.max(MIN_REMINDER_SECONDS, Math.round(s));
-  }
-
   private addReminder(args: Record<string, unknown>) {
     const message = typeof args.message === 'string' && args.message.trim() ? args.message.trim() : null;
     if (!message) return this.text('reminder_add requires a non-empty "message".', true);
 
     const now = Date.now();
-    const everySeconds = this.parseEvery(args);
-    const delay = this.parseDelay(args);
+    const every = readSpan(args, 'every');
+    const delay = readSpan(args, 'in');
     let fireAt: number | null = null;
 
-    if (everySeconds !== null) {
+    if (every !== null) {
       // Recurring: first fire is `delay` out if given, else one interval out.
-      fireAt = now + (delay ?? everySeconds) * 1000;
+      fireAt = now + (delay ?? every).seconds * 1000;
     } else if (delay !== null) {
-      fireAt = now + delay * 1000;
+      fireAt = now + delay.seconds * 1000;
     } else if (typeof args.atIso === 'string') {
       try {
         fireAt = parseReminderTime(args.atIso, AGENT_TIME_ZONE);
@@ -620,17 +634,34 @@ class HeartbeatServer {
       );
     }
 
+    // A delay or interval can reach past the last time a Date holds (atIso's
+    // parser refuses its own). Refuse it here, before anything is saved: a
+    // time past it can never fire, and listing it throws.
+    const pastTheLastTime = (span: Span, which: string, remedy: string) => this.text(
+      `reminder_add: no reminder was set. "${span.field}" ${span.value} puts ${which} past ${LAST_REMINDER_TIME}, `
+      + `the last time a reminder can hold. ${remedy}`, true,
+    );
+    if (every === null && delay !== null && !canHoldTime(fireAt)) {
+      return pastTheLastTime(delay, 'it', 'Give a shorter delay, or an atIso before then.');
+    }
+    if (every !== null && !canHoldTime(fireAt)) {
+      return pastTheLastTime(delay ?? every, 'its first fire', delay ? 'Give a shorter delay.' : 'Give a shorter interval.');
+    }
+    if (every !== null && !canHoldTime(fireAt + every.seconds * 1000)) {
+      return pastTheLastTime(every, 'its second fire', 'Give a shorter interval.');
+    }
+
     const rem: Reminder = {
       id: `rem_${now.toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
       message,
       createdAt: now,
       fireAt,
-      everySeconds,
+      everySeconds: every?.seconds ?? null,
     };
     this.reminders.push(rem);
     saveReminders(this.reminders);
     this.retryRefused();
-    log(`added reminder ${rem.id} fireAt=${new Date(fireAt).toISOString()} every=${everySeconds ?? 'once'}`);
+    log(`added reminder ${rem.id} fireAt=${new Date(fireAt).toISOString()} every=${rem.everySeconds ?? 'once'}`);
     // A fire time the reminder won't keep would be a false success.
     const blocked = this.pushBlockedReason();
     return this.text(`Reminder ${rem.id} set: ${this.describeReminder(rem, now)}${blocked ? ` ${this.heldText(blocked, true)}` : ''}`);
@@ -762,7 +793,8 @@ class HeartbeatServer {
 
   /** The host's answer to a reminder's push decides what becomes of it. Taken:
    *  a one-shot is removed, and a recurring one advances to its next future
-   *  time. Refused, or the push failed: it stays as it was, and is marked
+   *  time, or ends, logged whole, if that time is past the last a reminder can
+   *  hold. Refused, or the push failed: it stays as it was, and is marked
    *  refused, which dueAt reads. Cancelled while its push was out: it stays
    *  gone, and nothing is re-armed, since the cancel was. Any other answer
    *  re-arms. */
@@ -784,7 +816,15 @@ class HeartbeatServer {
         const now = Date.now();
         let next = rem.fireAt + rem.everySeconds * 1000;
         if (next <= now) next = now + rem.everySeconds * 1000;
-        this.reminders[i] = { ...rem, fireAt: next };
+        // A next time past the last a Date holds could never fire, and listing
+        // it would throw, so the reminder ends here. The log line keeps the
+        // row, message and all, since this save leaves it out of the file.
+        if (canHoldTime(next)) this.reminders[i] = { ...rem, fireAt: next };
+        else {
+          this.reminders.splice(i, 1);
+          log(`ended recurring reminder ${JSON.stringify(rem)}: its next time, ${next}, is past ${LAST_REMINDER_TIME}, `
+            + 'the last time a reminder can hold');
+        }
       }
       saveReminders(this.reminders);
     }
