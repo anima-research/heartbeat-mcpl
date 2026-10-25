@@ -1,6 +1,3 @@
-// sendPush says what came of a push/event, in words for the agent, and a push
-// the host never answers fails after 30 s, so a reminder waiting on its answer
-// can't wait forever.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
@@ -14,8 +11,6 @@ const params: PushEventParams = {
   origin: { source: 'reminder' }, payload: { content: [{ type: 'text', text: 'hello' }] },
 };
 
-/** The server's end of a connection, and the host's end, which answers each
- *  request as `answer` says, or never when it returns undefined. */
 function connected(answer: () => { error?: [number, string]; result?: unknown } | undefined) {
   const toHost = new PassThrough();
   const toServer = new PassThrough();
@@ -30,12 +25,11 @@ function connected(answer: () => { error?: [number, string]; result?: unknown } 
         if (a?.error) host.sendError(msg.request.id, ...a.error);
         else if (a) host.sendResponse(msg.request.id, a.result);
       }
-    } catch { /* closed */ }
+    } catch { }
   })();
   return { server, host, close: () => { host.close(); server.close(); } };
 }
 
-/** The errors `conn`'s requests reject with, as mcpl-core gives them. */
 function rejections(conn: McplConnection): Error[] {
   const seen: Error[] = [];
   const send = conn.sendRequest.bind(conn);
@@ -76,8 +70,6 @@ test('a push the host never answers fails at 30 s, and not before', async (t) =>
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const c = connected(() => undefined);
   t.after(c.close);
-  // The connection's own default is no timeout here, so only the bound that
-  // sendPush gives can end the wait, whatever mcpl-core's default is.
   c.server.requestTimeout = 0;
   const seen = rejections(c.server);
   const outcomes: PushOutcome[] = [];
@@ -96,7 +88,6 @@ test('a push the host never answers fails at 30 s, and not before', async (t) =>
 });
 
 test('a push out when the connection closes fails', async (t) => {
-  // The clock stands still, so the push's 30 s bound can't end it: only the close can.
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const c = connected(() => undefined);
   const seen = rejections(c.server);

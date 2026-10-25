@@ -38,17 +38,13 @@ export function isCapabilityPath(value: unknown): value is CapabilityPath {
 export interface FeatureSetDeclaration05 {
   description: string;
   uses: CapabilityPath[];
-  /** §8.1 — rollback support. This server is stateless, so `false`. */
   rollback?: boolean;
 }
 
-/** The name-keyed view the derivation works over, independent of wire shape. */
 export type FeatureSetMap = Record<string, FeatureSetDeclaration05>;
 
-/** One element of the transitional array wire shape (see the note above). */
 export type FeatureSetWireEntry = FeatureSetDeclaration05 & { name: string };
 
-/** `featureSets/update` params — SPEC §5.3, §6.7. */
 export interface FeatureSetsUpdateParams05 {
   /** §5.4: the sole normative allowlist. Absence of a path is denial. */
   effectiveCapabilities?: unknown;
@@ -62,8 +58,6 @@ export interface FeatureSetsUpdateParams05 {
  *  tools is MCP's own capabilities.tools, not repeated in the MCPL block. */
 export interface McplServerCapabilities05 {
   version: string;
-  /** §17.2 canonical content digest. Omitted: this server's manifest is fixed
-   *  for the life of the connection and it implements neither §17 method. */
   revision?: string;
   pushEvents?: boolean;
   featureSets?: FeatureSetWireEntry[];
@@ -96,13 +90,6 @@ export interface AcceptedReceipt {
   notes?: string[];
 }
 
-/**
- * The refusal form of the receipt (§6.7). This server never emits one — losing
- * `pushEvents` costs it its wakes but its tools still answer, so `accepted:
- * true, mode: "degraded"` is the honest report. Refusing would be the coercion
- * lever §6.7 names ("I will not start unless you grant X"). The type is kept
- * because it is part of the method's contract.
- */
 export interface RefusedReceipt {
   accepted: false;
   fallback: 'mcp-only' | 'close';
@@ -112,25 +99,11 @@ export interface RefusedReceipt {
 
 export type DegradationReceipt = AcceptedReceipt | RefusedReceipt;
 
-/**
- * The effective grant as this server understands it. Constructed only from a
- * host-sent `featureSets/update`; there is no server-side default and no way for
- * the server to add to it (§5.4 — advertisement is an input, never an
- * authorization).
- */
 export interface Grant {
-  /** Raw `effectiveCapabilities` patterns, verbatim from the host — kept for
-   *  operator-facing logging only. Authorization reads `paths`. */
   readonly patterns: readonly string[];
-  /** The §6.2 paths those patterns resolve to. Authorization is set membership
-   *  here, so nothing outside the closed vocabulary can ever be granted. */
   readonly paths: ReadonlySet<CapabilityPath>;
-  /** `deniedCapabilities`, verbatim. §5.4: diagnostics only, and it takes part
-   *  in no decision — it is carried so an operator can be told why. */
   readonly denied: readonly string[];
-  /** Feature sets the host named in `disabled` (patterns, §6.3 wildcards). */
   readonly disabled: readonly string[];
-  /** Feature sets the host named in `enabled`, or null when the field was absent. */
   readonly enabled: readonly string[] | null;
 }
 
@@ -162,16 +135,6 @@ export function capabilityMatches(pattern: string, path: string): boolean {
   return p.every((seg, i) => seg === '*' || seg === q[i]);
 }
 
-/**
- * Resolve host patterns to the concrete §6.2 paths they cover.
- *
- * Because the vocabulary is closed (App. B.2 declares it as an enum), resolving
- * once at parse time makes every later question — "is this granted?", "what
- * survives a narrowing?" — plain set arithmetic, with no second matching rule to
- * get subtly wrong. A pattern that resolves to nothing (a future path this build
- * does not know) simply grants nothing here, which is fail-closed and harmless
- * since this server never exercises a path outside the list.
- */
 export function resolvePaths(patterns: readonly string[]): Set<CapabilityPath> {
   const out = new Set<CapabilityPath>();
   for (const path of CAPABILITY_PATHS) {
@@ -211,7 +174,6 @@ export function parsePolicy(rawParams: unknown): PolicyParse {
     denied = parsed.value;
   }
 
-  // §5.4: both lists naming the same path is a contradiction, not a preference.
   const contradiction = effective.filter((p) => denied.includes(p));
   if (contradiction.length > 0) {
     return { ok: false, error: `path(s) in both effectiveCapabilities and deniedCapabilities: ${contradiction.join(', ')}` };
@@ -242,7 +204,7 @@ export function parsePolicy(rawParams: unknown): PolicyParse {
 export function featureSetMatches(pattern: string, name: string): boolean {
   if (pattern === name || pattern === '*') return true;
   if (pattern.endsWith('.*')) {
-    const prefix = pattern.slice(0, -1); // keep the trailing dot
+    const prefix = pattern.slice(0, -1);
     return name.startsWith(prefix);
   }
   return false;
@@ -252,23 +214,10 @@ export type FeatureSetDisabledReason = 'invalid_uses' | 'capability_denied' | 'h
 
 export interface FeatureSetState {
   active: boolean;
-  /** Paths from `uses` that the grant does not cover. */
   missing: string[];
   reason?: FeatureSetDisabledReason;
 }
 
-/**
- * Derive a feature set's state from the grant — SPEC §6.4, fail-closed.
- *
- *  1. Absent, empty, or unrecognized `uses` ⇒ `invalid_uses`. We do not guess.
- *  2. Any path in `uses` outside the grant ⇒ disabled; absence is denial (§5.4).
- *  3. The host naming it in `disabled` ⇒ disabled, respected immediately (§6.7).
- *  4. An `enabled` list that is present and does not cover us ⇒ not enabled. In
- *     §5.3's example `enabled`/`disabled` mirror the derivation exactly, so a
- *     conforming host that grants our capabilities also lists us; treating the
- *     omission as denial is the fail-closed reading of an otherwise unspecified
- *     state. An absent `enabled` field constrains nothing.
- */
 export function deriveFeatureSetState(name: string, decl: FeatureSetDeclaration05, grant: Grant): FeatureSetState {
   const uses = decl.uses;
   if (!Array.isArray(uses) || uses.length === 0 || !uses.every(isCapabilityPath)) {
@@ -285,14 +234,6 @@ export function deriveFeatureSetState(name: string, decl: FeatureSetDeclaration0
   return { active: true, missing: [] };
 }
 
-/**
- * Build the degradation receipt for a set of declarations (§6.7).
- *
- * This is consequence testimony: it says what the server will do under the grant
- * it was just handed. It never asks for more, and it never reports a capability
- * as available that the grant did not contain — a receipt that lied about that
- * would be self-attestation wearing a different hat.
- */
 export function buildReceipt(decls: FeatureSetMap, grant: Grant): AcceptedReceipt {
   const unavailable: UnavailableFeature[] = [];
   const notes: string[] = [];

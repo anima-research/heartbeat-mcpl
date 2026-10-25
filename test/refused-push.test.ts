@@ -1,10 +1,3 @@
-// A reminder changes only when the host answers its push. Taken, a one-shot is
-// removed and a recurring one advances; refused, or failed, it is held: listed
-// with the reason and when, not asked again on every fire, and tried once more
-// at the next policy update, add, cancel or restart, and a recurring one also
-// an interval after the refusal. Until the host takes it, the file holds it as
-// it was. Before, it was removed or advanced as soon as its push went out, so a
-// refused push lost it with only a log line.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { POLICY, logged, origin, serverWithHost } from './scripted-host.js';
@@ -16,8 +9,6 @@ const row = (id: string, fireAt: number, everySeconds: number | null) => ({ id, 
 const refusedLine = 'A reminder whose push was refused or failed is tried again when the host next updates its settings, '
   + 'when a reminder is added or cancelled, or when the server restarts, and a recurring one also an interval after it was refused or failed.';
 
-/** reminder_list once it matches `pattern`: the server reads a push's answer
- *  after the host sends it, so what the answer changes shows a little later. */
 async function listed(h: Host, pattern: RegExp): Promise<string> {
   const deadline = Date.now() + 5_000;
   for (;;) {
@@ -28,7 +19,6 @@ async function listed(h: Host, pattern: RegExp): Promise<string> {
   }
 }
 
-/** When reminder_list says the reminder `id` was refused, in epoch ms. */
 function refusedAt(list: string, id: string): number {
   const m = new RegExp(`^${id} \\| .*, at (\\S+) \\[[^\\]]+\\]\\) \\|`, 'm').exec(list);
   assert.ok(m, `no refusal time for ${id}:\n${list}`);
@@ -45,15 +35,12 @@ test('a one-shot whose push fails is held, listed with the reason and when, and 
   await h.pushCount(1);
   const list = await listed(h, /\(overdue; the push failed: /);
   const listedAt = Date.now();
-  // Long enough for a reminder re-armed after its refusal to have been tried again many times.
   await sleep(500);
   assert.equal(h.pushes.length, 1, 'tried once, not again on every fire');
   assert.match(list, /^rem_once \| due .* \(overdue; the push failed: Feature set not enabled: heartbeat, at [^)]+\) \| one-shot \| "rem_once"$/m);
   assert.ok(list.endsWith(`\n${refusedLine}`), list);
-  // A one-shot has no interval to wait for, so its line ends at the triggers.
   await logged(h, 'reminder rem_once: the push failed: Feature set not enabled: heartbeat; '
     + 'holding it until the next policy update, add, cancel or restart');
-  // To the second, so a time from before the server started (such as the due time) can't pass.
   const at = refusedAt(list, 'rem_once');
   assert.ok(at >= Math.floor(startedAt / 1000) * 1000 && at <= listedAt, `listed as refused when the answer came (${at - startedAt} ms after the start)`);
   assert.deepEqual(h.stored(), [seeded], 'the file holds it as it was');
@@ -86,12 +73,9 @@ test('a recurring reminder whose push the host refuses stays at its due time, an
 });
 
 test('a recurring reminder the host refuses is tried again an interval after each refusal, with nothing else happening, and goes on once taken', async (t) => {
-  // When each push reached the host. The server reads the host's answer after
-  // this, so a time the code counts an interval from comes later.
   const arrived: number[] = [];
   const fireAt = Date.now() - 1000;
   const seeded = row('rem_5s', fireAt, 5);
-  // Refused at its first push and at its first retry, then taken.
   const h = await serverWithHost((p) => {
     if (origin(p).source !== 'reminder') return {};
     arrived.push(Date.now());
@@ -103,17 +87,12 @@ test('a recurring reminder the host refuses is tried again an interval after eac
   await logged(h, 'reminder rem_5s: the host refused it: busy; '
     + 'holding it until the next policy update, add, cancel or restart, or for its interval, 5s');
   assert.deepEqual(h.stored(), [seeded], 'refused, the file holds it as it was');
-  // No policy update, add, cancel or restart: only its interval brings it back,
-  // and once taken it goes on an interval after the take, not at once.
   await h.pushCount(4, 25_000);
   const gaps = arrived.slice(1, 4).map((at, n) => at - arrived[n]!);
   for (const [n, gap] of gaps.entries()) {
     assert.ok(gap >= 5_000 && gap < 9_000, `push ${n + 2} came ${gap} ms after push ${n + 1}, not an interval: ${gaps}`);
   }
   assert.ok(h.pushes.every((p) => origin(p).reminderId === 'rem_5s'));
-  // Listed as next due, the last push is settled and saved: the file is
-  // written in place, so a read while the take is still being saved can catch
-  // it half written.
   const after = await listed(h, /^rem_5s \| due .* \(~\d+s\) \| repeats every 5s/m);
   assert.doesNotMatch(after, /refused|failed/, 'taken, its refusal is gone');
   assert.notEqual((h.stored()[0] as { fireAt: number }).fireAt, fireAt, 'and it has advanced in the file');
@@ -152,14 +131,11 @@ test('a refused reminder is tried once more at a Notification and at a cancel, n
   await refusedAgain(2, 'tried again at a Notification');
   await h.call('reminder_cancel', { id: 'rem_other' });
   await refusedAgain(3, 'and at a cancel');
-  // A malformed Notification is ignored, so it updates nothing and retries nothing.
   h.notify('featureSets/update', { ...POLICY, enabled: 'heartbeat' });
   assert.match(await h.call('reminder_list'), /^rem_once \| .*\(overdue; the host refused it: busy, at /m, 'still refused after a malformed Notification');
-  // Long enough for a reminder re-armed by it to have been pushed.
   await sleep(300);
   assert.equal(h.pushes.length, 3, 'and not pushed again');
   await assert.rejects(h.request('featureSets/update', { ...POLICY, enabled: 'heartbeat' }));
-  // No wake can be delivered under a malformed policy, so it waits for one, like any due reminder.
   assert.match(await h.call('reminder_list'), /^rem_once \| due .* \(overdue\) \| one-shot/m, 'a malformed Request is a policy update too');
   assert.equal(h.pushes.length, 3);
 });
@@ -174,10 +150,8 @@ test('until the host answers, a reminder is sent and waiting, and unchanged in t
   }, { reminders: rows });
   t.after(h.close);
   await h.pushCount(2);
-  // One that falls due while those two are out is pushed, and they aren't again.
   await h.call('reminder_add', { message: 'later', atIso: new Date(Date.now() + 1000).toISOString() });
   await h.pushCount(3);
-  // Long enough for a reminder re-armed while its push is out to have been pushed many times.
   await sleep(500);
   assert.deepEqual(h.pushes.map((p) => origin(p).reminderId).slice(0, 2), ['rem_once', 'rem_hourly']);
   assert.equal(h.pushes.length, 3, 'each is pushed once while its answer is awaited, a later fire included');
@@ -193,7 +167,6 @@ test('until the host answers, a reminder is sent and waiting, and unchanged in t
   assert.doesNotMatch(await h.call('reminder_list'), /rem_once/, 'cancelled while its push was out, the host taking it changes nothing');
   assert.deepEqual(h.stored(), [{ ...rows[1]!, fireAt: fireAt + 3_600_000 }], 'taken, the recurring one advances from its own time');
   assert.equal(h.pushes.length, 3);
-  // Read once the server has gone and its log has all been read.
   await h.hangUp();
   assert.doesNotMatch(h.stderr(), /handling the host's answer/, 'and answering it throws nothing');
 });
@@ -226,8 +199,6 @@ test('a host that goes away while a push is out loses no reminder, and leaves no
   t.after(h.close);
   await h.pushCount(1);
   const exitedAt = await Promise.race([h.hangUp().then(() => 'exited'), sleep(5000).then(() => 'still running')]);
-  // Armed for rem_later with no host to send to, the process would wait for it,
-  // and once it fell due, wake every millisecond from then on.
   assert.equal(exitedAt, 'exited', 'the server exits once its host has gone');
   assert.doesNotMatch(h.stderr(), /handling the host's answer/, 'and settles the push that was out without a throw');
   assert.deepEqual(h.stored(), rows, 'both are in the file as they were, so the next start fires rem_due again');

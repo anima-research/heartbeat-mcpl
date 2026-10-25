@@ -1,7 +1,3 @@
-// readStored keeps a file the server can't use from being lost to a save: one
-// that can't be read is left alone and marked unsaveable, and one that reads
-// but isn't what the server writes is copied aside, named by its content,
-// before anything saves over it.
 import test from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
@@ -51,7 +47,6 @@ test('a file that isn\'t JSON, or isn\'t the shape its store writes, is copied a
     assert.equal(readFileSync(copy, 'utf8'), text);
     assert.equal(statSync(copy).mode & 0o777, 0o600, 'the copy has the file\'s mode, so no one can read it who couldn\'t read the file');
     assert.equal(readFileSync(path, 'utf8'), text, 'the file itself is left for the next save');
-    // Starting on the same content again keeps the one copy.
     assert.equal(readStored(path, 'reminders', Array.isArray).unsaveable, null);
     assert.deepEqual(readdirSync(dirname(path)).filter((f) => f.includes('.unreadable-')), [basename(copy)]);
   }
@@ -154,7 +149,6 @@ test('a file at the copy\'s name that holds something else is never taken for th
 test('a copy that fails says why', { skip: process.getuid?.() === 0 ? 'root writes into any directory' : false }, (t) => {
   const path = fresh(t);
   writeFileSync(path, 'not json');
-  // A directory the server can't write into: the copy fails with EACCES.
   chmodSync(dirname(path), 0o555);
   try {
     const stored = readStored(path, 'reminders', Array.isArray);

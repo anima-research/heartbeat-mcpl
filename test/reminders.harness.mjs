@@ -26,7 +26,7 @@ const SERVER = join(HERE, '..', 'dist', 'src', 'index.js');
 
 const dir = mkdtempSync(join(tmpdir(), 'hb-a4-'));
 const remindersFile = join(dir, 'reminders.json');
-const configFile = join(dir, 'config.json'); // absent → defaults (ambient = 4h, won't fire)
+const configFile = join(dir, 'config.json');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failures = 0;
@@ -35,11 +35,8 @@ function check(cond, label) {
   else { console.log(`  FAIL - ${label}`); failures++; }
 }
 
-// Collect reminder push events (ignore any ambient heartbeat pushes). Each
-// fire's text is `[reminder <id>, … · current time: …] <message>`; `body` is
-// the message after that header, `headerId` the id the header names.
 const HEADER = /^\[reminder (rem_[^,\s]+)(?:, set [^·]+|, repeats every \d+s)? · current time: [^\]]+\]\] /;
-const fires = []; // { text, body, headerId, id, at }
+const fires = [];
 function attach(session) {
   session.on('event', (ev) => {
     if (ev.kind !== 'push') return;
@@ -62,14 +59,12 @@ const POLICY = {
   enabled: ['heartbeat'],
   disabled: [],
 };
-/** Send the initial policy as a Request and return the degradation receipt. */
 const sendPolicy = (params = POLICY) => session.raw('featureSets/update', params);
 
 try {
   await session.start();
   console.log('# heartbeat-mcpl reminder scheduler — e2e via mcpl-harness\n');
 
-  // ── 0. initial policy: featureSets/update Request → degradation receipt ──
   console.log('0) no wake is delivered before policy; featureSets/update is answered with a receipt');
   const pre = await session.callTool('heartbeat_trigger', {});
   const preText = pre?.content?.[0]?.text ?? '';
@@ -86,44 +81,41 @@ try {
   const postText = (await session.callTool('heartbeat_trigger', {}))?.content?.[0]?.text ?? '';
   check(/Heartbeat fired/.test(postText), 'trigger after policy delivers the wake');
 
-  // ── 1. one-shot fires exactly once ──────────────────────────────────────
   console.log('1) one-shot reminder fires exactly once');
   await session.callTool('reminder_add', { message: 'ONE', inSeconds: 5 });
   await sleep(4000);
   check(count('ONE') === 0, 'no premature fire before due');
-  await sleep(3500); // ~7.5s total > 5s due
+  await sleep(3500);
   check(count('ONE') === 1, 'fired exactly once at due');
   const one = fires.find((f) => f.body === 'ONE');
   check(!!one && one.headerId === one.id, `the text names its reminder and the time (${one?.text ?? 'no fire'})`);
   check(!!one && /^\[reminder \S+, set /.test(one.text), 'a one-shot says when it was set');
 
-  // ── 2. recurring fires on cadence, then cancel silences it ──────────────
   console.log('2) recurring reminder fires on cadence; cancel silences it');
   const addRes = await session.callTool('reminder_add', { message: 'REC', everySeconds: 5 });
   const addText = addRes?.content?.[0]?.text ?? '';
   const recId = (addText.match(/Reminder (rem_\S+) set/) ?? [])[1];
   check(!!recId, `reminder_add returned an id (${recId ?? 'none'})`);
-  await sleep(12000); // expect fires at ~5s and ~10s
+  await sleep(12000);
   const afterTwoIntervals = count('REC');
   check(afterTwoIntervals >= 2, `recurring fired on cadence (${afterTwoIntervals} fires in ~12s)`);
   check(fires.some((f) => f.body === 'REC' && f.text.startsWith(`[reminder ${recId}, repeats every 5s · current time: `)),
     'a recurring fire names its interval');
   await session.callTool('reminder_cancel', { id: recId });
   const atCancel = count('REC');
-  await sleep(7000); // one more interval would have elapsed
+  await sleep(7000);
   check(count('REC') === atCancel, `cancel silenced the recurring reminder (stayed at ${atCancel})`);
 
-  // ── 3. a pending reminder survives a restart ────────────────────────────
   console.log('3) a pending reminder survives a server restart');
   await session.callTool('reminder_add', { message: 'SURV', inSeconds: 8 });
   check(count('SURV') === 0, 'not yet fired before restart');
   await sleep(1500);
-  await session.restart(); // respawn: server must reload reminders from disk
+  await session.restart();
   // A restart is a fresh connection, so the grant starts empty again (§5.3).
   const receiptAfterRestart = await sendPolicy();
   check(receiptAfterRestart?.accepted === true, 'policy re-established after restart');
   check(count('SURV') === 0, 'still not fired right after restart');
-  await sleep(9000); // ~10.5s after add > 8s due
+  await sleep(9000);
   check(count('SURV') === 1, 'reminder fired once after restart (survived from disk)');
 } finally {
   session.close();

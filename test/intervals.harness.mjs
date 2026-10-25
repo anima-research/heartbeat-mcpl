@@ -1,11 +1,3 @@
-// Heartbeat and reminder intervals, against the built server through the same
-// HostSession as reminders.harness.mjs. A heartbeat interval longer than
-// setTimeout can hold waits for it. A stored interval that would fire about
-// every millisecond is read the way the tools would have taken it: a heartbeat
-// interval of null, which heartbeat_configure saves for an infinite one, loads
-// paused, one under 60 s is raised to 60 s, and anything else that isn't a
-// number falls back to the default; a reminder interval of 0 or less makes a
-// one-off, and one under 5 s is raised to 5 s.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -24,8 +16,6 @@ const POLICY = {
   enabled: ['heartbeat'], disabled: [],
 };
 
-/** A server on its own files, with a stored config and reminders if given,
- *  past the initial policy, counting the heartbeats and reminders it pushes. */
 async function start(t, { config: storedConfig, reminders: storedReminders } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'heartbeat-intervals-'));
   const config = join(dir, 'config.json');
@@ -52,7 +42,6 @@ async function start(t, { config: storedConfig, reminders: storedReminders } = {
   await session.start();
   await session.raw('featureSets/update', POLICY);
   const status = async () => (await session.callTool('heartbeat_status', {})).content[0].text;
-  /** Store a new config and restart on it. */
   const restartWith = async (next) => {
     writeFileSync(config, JSON.stringify(next));
     await session.restart();
@@ -71,11 +60,7 @@ test('a 720-hour interval waits for its time, and the status counts down to it',
 });
 
 test('a stored heartbeat interval is read as heartbeat_configure would have taken it', async (t) => {
-  // Earlier versions of heartbeat_configure saved {intervalHours: 1e306} as
-  // null, with paused false; null read as 0. A hand edit can store 0, which
-  // fired as often, or text.
   const { session, heartbeats, status, restartWith } = await start(t, { config: { intervalSeconds: null, paused: false } });
-  /** The interval heartbeat_status shows, and that the next heartbeat is armed within it. */
   const armed = async () => {
     const text = await status();
     assert.match(text, /^Heartbeat ACTIVE /);
@@ -99,10 +84,8 @@ test('a stored heartbeat interval is read as heartbeat_configure would have take
   assert.equal(await armed(), 60, 'a stored 0 is raised to the 60 s floor');
   await restartWith({ intervalSeconds: 90 });
   assert.equal(await armed(), 90, 'a stored 90 is kept');
-  // Saved as given by earlier versions; its next heartbeat would fall past the last time a Date holds.
   await restartWith({ intervalSeconds: 1e306, paused: false });
   assert.match(await status(), /^Heartbeat PAUSED \| .*interval=14400s /, 'an interval too long to schedule, saved for "never", loads paused');
-  // Finite in milliseconds too, and still past the last time a Date holds once added to now.
   await restartWith({ intervalSeconds: 9e12, paused: false });
   assert.match(await status(), /^Heartbeat PAUSED \| .*interval=14400s /, 'and so does a finite one');
 });
@@ -112,9 +95,6 @@ const listed = async (session) => (await session.callTool('reminder_list', {})).
 const lineOf = (list, id) => list.split('\n').find((l) => l.startsWith(`${id} |`)) ?? '';
 
 test('a stored reminder interval is read as reminder_add would have taken it', async (t) => {
-  // Earlier versions of reminder_add raised an interval under 5 s to 5 s and
-  // read 0 or less as none, so only a hand edit stores one; a fraction is kept
-  // as given. Each falls due an hour on, so each is listed as it was loaded.
   const hourOn = Date.now() + 3_600_000;
   const { session } = await start(t, {
     reminders: [
@@ -136,12 +116,9 @@ test('a stored reminder interval is read as reminder_add would have taken it', a
 });
 
 test('a stored reminder interval of 0 fires once when it falls due, then is gone', async (t) => {
-  // The one that fired every millisecond before. It is already due when the
-  // server starts, so it waits for the host's policy, then fires exactly once.
   const dueAt = Date.now() - 1000;
   const { session, fired } = await start(t, { reminders: [reminderRow('rem_zero', dueAt, 0)] });
   for (const deadline = Math.max(dueAt, Date.now()) + 10_000; fired.length === 0 && Date.now() < deadline;) await sleep(50);
-  // Long enough for the millisecond re-fires it once had to show.
   await sleep(1000);
   assert.equal(fired.length, 1, `rem_zero fired ${fired.length} times`);
   assert.equal(lineOf(await listed(session), 'rem_zero'), '', 'rem_zero is gone once it has fired');

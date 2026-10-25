@@ -29,8 +29,6 @@ function stateOf(grant: Grant, decl: FeatureSetDeclaration05 = HEARTBEAT) {
   return deriveFeatureSetState('heartbeat', decl, grant);
 }
 
-// ── §6.2 vocabulary ──
-
 test('the uses vocabulary is exactly the 17 paths of §6.2', () => {
   assert.equal(CAPABILITY_PATHS.length, 17);
   assert.ok(isCapabilityPath('contextHooks.beforeInference.inject.system'));
@@ -38,8 +36,6 @@ test('the uses vocabulary is exactly the 17 paths of §6.2', () => {
   assert.ok(!isCapabilityPath('channels.observe'));               // 0.4 name, removed
   assert.ok(!isCapabilityPath('hostState'));
 });
-
-// ── §5.4 parse / fail-closed ──
 
 test('a path in both effectiveCapabilities and deniedCapabilities is malformed', () => {
   const parsed = parsePolicy({ effectiveCapabilities: ['tools', 'pushEvents'], deniedCapabilities: ['pushEvents'] });
@@ -64,11 +60,8 @@ test('deniedCapabilities never authorizes anything on its own', () => {
   const parsed = parsePolicy({ deniedCapabilities: ['pushEvents', 'tools'] });
   assert.ok(parsed.ok);
   assert.equal(capabilityGranted(parsed.grant, 'tools'), false);
-  // Carried verbatim for operator diagnostics, and only that.
   assert.deepEqual([...parsed.grant.denied], ['pushEvents', 'tools']);
 });
-
-// ── §5.4 matching ──
 
 test('* matches one segment only, so a wildcard never widens into a subtree', () => {
   assert.ok(capabilityMatches('channels.*', 'channels.publish'));
@@ -82,12 +75,8 @@ test('patterns resolve only into the closed §6.2 vocabulary', () => {
     'channels.acknowledge', 'channels.incoming', 'channels.lifecycle',
     'channels.publish', 'channels.register', 'channels.streaming', 'channels.typing',
   ]);
-  // A path this build does not know grants nothing, rather than being carried
-  // forward as an unchecked string.
   assert.equal(resolvePaths(['someFutureCapability']).size, 0);
 });
-
-// ── §6.4 derivation ──
 
 test('the full grant activates the feature set', () => {
   assert.deepEqual(stateOf(grantOf(['tools', 'pushEvents'])), { active: true, missing: [] });
@@ -131,8 +120,6 @@ test('an enabled list that omits us is treated as not enabled', () => {
   assert.equal(stateOf(grantOf(['tools', 'pushEvents'], { enabled: ['heartbeat'] })).active, true);
 });
 
-// ── §6.7 receipt ──
-
 test('a full grant yields an accepted receipt in full mode with nothing unavailable', () => {
   const receipt = buildReceipt({ heartbeat: HEARTBEAT }, grantOf(['tools', 'pushEvents']));
   assert.equal(receipt.accepted, true);
@@ -150,8 +137,6 @@ test('a denied capability yields a degraded receipt naming the consequence', () 
   // A receipt's notes are testimony about what the server will do, not a request for capability (SPEC §6.7).
   assert.match(receipt.notes?.join(' ') ?? '', /will not be delivered/);
 });
-
-// ── §6.7 notification form ──
 
 test('a notification-form update can only narrow the grant, never widen it', () => {
   const narrowed = narrowGrant(grantOf(['tools', 'pushEvents']), grantOf(['tools']), true);

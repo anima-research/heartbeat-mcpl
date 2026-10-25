@@ -1,5 +1,3 @@
-// checkArguments: every argument a call sends is applied, or named as a
-// problem; a key no tool here takes and like none is ignored.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { addUnits, checkArguments, closestNames, ignoredNote } from '../src/arguments.js';
@@ -39,13 +37,10 @@ test('a near miss, or another tool\'s argument or a near miss of one, is a probl
     ['"Paused" isn\'t an argument configure takes; the closest is "paused".']);
   assert.deepEqual(checkArguments(configure, { pasued: true }, tools).problems,
     ['"pasued" isn\'t an argument configure takes; the closest is "paused".']);
-  // A part of a name, at three letters or more, is a shortened attempt at it.
   assert.deepEqual(checkArguments(configure, { paused: true, interval: 30 }, tools).problems,
     ['"interval" isn\'t an argument configure takes; the closest is "intervalSeconds" or "intervalMinutes".']);
   assert.deepEqual(checkArguments(configure, { Seconds: 30 }, tools).problems,
     ['"Seconds" isn\'t an argument configure takes; the closest is "intervalSeconds".']);
-  // The suggestion names only what the slip was decided on. Beside "channel", "channel_id" is a slip for "channelId"
-  // alone; sent without it, it holds "channel" too, so both are named.
   const send: ToolSchema = { name: 'send', inputSchema: { properties: {
     channel: { type: 'string', description: 'A channel.' },
     channelId: { type: 'string', description: 'A channel id.' },
@@ -67,7 +62,6 @@ test('a key like nothing here is ignored, unless it is all a tool that takes arg
     problems: ['It doesn\'t take "reason"; it takes "intervalSeconds", "intervalMinutes", "paused" and "mode".'],
     ignored: [],
   });
-  // Beside the argument whose name it holds, a key is an extra that explains it.
   assert.deepEqual(checkArguments(configure, { paused: true, pausedReason: 'quiet' }, tools), { problems: [], ignored: ['pausedReason'] });
 });
 
@@ -76,18 +70,14 @@ test('a key that holds an argument\'s whole name is a slip for it sent without i
     ['"pausedReason" isn\'t an argument configure takes; the closest is "paused".']);
   assert.deepEqual(checkArguments(configure, { heartbeatIntervalMinutes: 30, paused: false }, tools).problems,
     ['"heartbeatIntervalMinutes" isn\'t an argument configure takes; the closest is "intervalMinutes".']);
-  // Holding two names, both sent without it, it names both.
   assert.deepEqual(checkArguments(configure, { pausedMode: true }, tools).problems,
     ['"pausedMode" isn\'t an argument configure takes; the closest is "paused" or "mode".']);
-  // Another tool's argument, held whole.
   assert.deepEqual(checkArguments(list, { intervalMinutesValue: 5 }, tools).problems,
     ['"intervalMinutesValue" is close to "intervalMinutes", configure\'s argument, not one list takes; list takes no arguments.']);
-  // Beside another tool's argument it holds, it is an extra there too.
   assert.deepEqual(checkArguments(list, { intervalMinutes: 5, intervalMinutesValue: 6 }, tools), {
     problems: ['"intervalMinutes" is configure\'s argument, not list\'s; list takes no arguments.'],
     ignored: ['intervalMinutesValue'],
   });
-  // A name of a letter or two is in too many keys to count: "valid" is no slip for "id".
   assert.deepEqual(checkArguments(list, { valid: true }, tools), { problems: [], ignored: ['valid'] });
 });
 
@@ -99,7 +89,6 @@ test('the note on ignored keys names them and every argument the tool takes, app
 });
 
 test('a letter or two of a name, or a key that shares only its start with one, is no slip', () => {
-  // As agent-framework's helper decides: a part of a name needs three letters, and a shared start counts for nothing.
   const add: ToolSchema = { name: 'add', inputSchema: { properties: {
     message: { type: 'string', description: 'The text.' },
     atIso: { type: 'string', description: 'A time.' },
@@ -125,7 +114,6 @@ test('closestNames ranks prefixes and substrings ahead of edits, gives two at mo
   assert.deepEqual(closestNames('mod', ['paused', 'mode']), ['mode']);
   assert.deepEqual(closestNames('pasued', ['paused', 'mode']), ['paused']);
   assert.deepEqual(closestNames('reason', ['paused', 'mode']), []);
-  // "mud" is as few edits from "mod" as "mode" is, but "mode" starts with it.
   assert.deepEqual(closestNames('mod', ['mud', 'mode']), ['mode', 'mud']);
   assert.deepEqual(closestNames('every', ['everyHours', 'everyMinutes', 'everySeconds']), ['everyHours', 'everyMinutes']);
 });
@@ -139,7 +127,6 @@ test('addUnits adds the units given, and refuses a negative one', () => {
   assert.equal(addUnits({ inMinutes: -5, inSeconds: 10 }, units, problems), null);
   assert.deepEqual(problems, ['"inMinutes" -5 is negative; give 0 or more.']);
   assert.equal(addUnits({ inHours: 1e306 }, units, [])?.seconds, Infinity);
-  // Fractions are kept, to the millisecond.
   assert.equal(addUnits({ inSeconds: 4.6 }, units, [])?.seconds, 4.6);
   assert.equal(addUnits({ inMinutes: 0.1 }, units, [])?.seconds, 6);
   assert.equal(addUnits({ inSeconds: 0.0004 }, units, [])?.seconds, 0);

@@ -1,7 +1,3 @@
-// What the agent reads when a call can't do what it asked, against the built
-// server through the same HostSession as reminders.harness.mjs: a heartbeat the
-// host won't take, a reminder id that isn't pending, and a tool that doesn't
-// exist. Each is an error that says what happened and what to do.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -37,7 +33,6 @@ test('a call that can\'t do what it asked is an error that says why and what to 
     return { isError: result.isError === true, text: result.content[0].text };
   };
   const ask = "Calling again won't change that; ask whoever runs this host if you need wakes.";
-  /** heartbeat_trigger refused for `reason`, with `remedy`, and the status naming the same reason. */
   const blocked = async (reason, remedy) => {
     const { isError, text } = await call('heartbeat_trigger');
     assert.equal(isError, true);
@@ -54,7 +49,6 @@ test('a call that can\'t do what it asked is an error that says why and what to 
     await blocked('the host has turned heartbeat off for this server', ask);
     await session.raw('featureSets/update', { ...POLICY, enabled: [] });
     await blocked("the host hasn't enabled heartbeat for this server", ask);
-    // A reminder set meanwhile gives the time it falls due and says it waits.
     const added = await call('reminder_add', { message: 'x', inHours: 1 });
     assert.equal(added.isError, false, added.text);
     assert.match(added.text, /^Reminder rem_\S+ set: due \S+ \[[^\]]+\] \(~3600s\) \| one-shot \| "x"\. No wake can be delivered now, because the host hasn't enabled heartbeat for this server, so it waits until one can\. If that doesn't change, ask whoever runs this host\.$/);

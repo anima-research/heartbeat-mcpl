@@ -1,7 +1,3 @@
-// Silent heartbeat delivery falls back to message mode when the host refuses
-// the empty silent push (-32602): a host without silent wakes, or this server
-// configured under an id other than `heartbeat`. Unit tests for the helper,
-// then an end-to-end run of the server against a scripted host.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RpcError } from '@animalabs/mcpl-core';
@@ -13,8 +9,6 @@ const params = (eventId: string, content: PushEventParams['payload']['content'])
   featureSet: 'heartbeat', eventId, timestamp: '2026-10-06T00:00:00Z',
   origin: { source: 'heartbeat' }, payload: { content },
 });
-
-// ── isEmptyPushRejection ──
 
 test('a -32602 error, or accepted:false naming empty content, is an empty-push rejection', () => {
   assert.equal(isEmptyPushRejection({ error: new RpcError(INVALID_PARAMS, 'content has no visible content') }), true);
@@ -28,8 +22,6 @@ test('other outcomes are not', () => {
   assert.equal(isEmptyPushRejection({ result: { accepted: false, reason: 'duplicate' } }), false);
   assert.equal(isEmptyPushRejection({ result: undefined }), false);
 });
-
-// ── sendSilentWithFallback ──
 
 test('an accepted silent push is not followed by a fallback', async () => {
   const sent: PushEventParams[] = [];
@@ -75,8 +67,6 @@ test('any other failure is not papered over with a fallback', async () => {
   ), /Feature set not enabled/);
   assert.deepEqual(sent, ['s']);
 });
-
-// ── end to end: the server against a scripted host ──
 
 test('end to end: a host refusing the empty push gets the tick in message mode, explained once', async (t) => {
   const h = await serverWithHost((p) => (p.payload.content.length === 0

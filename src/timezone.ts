@@ -1,7 +1,3 @@
-/** Format agent-visible wall-clock times without changing UTC protocol data. */
-
-/** True iff `zone` names an IANA time zone this runtime can format in.
- *  Exported for hosts that want to pre-validate AGENT_TIMEZONE strictly. */
 export function isValidTimeZone(zone: string): boolean {
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: zone }).format(new Date(0));

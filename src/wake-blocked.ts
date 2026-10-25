@@ -1,19 +1,9 @@
 import type { FeatureSetState } from './mcpl05.js';
 
-/** Why a wake can't be delivered: `log` in the protocol's terms, for whoever
- *  runs the host, and `reason` and `remedy` in plain words, for the agent,
- *  who can't see the host's settings or act on its spec sections. `final`
- *  when no wake will come on this connection from a host like this one: a
- *  host that has gone, an MCP-only host, one that has sent its policy only as
- *  a Notification, a form older than MCPL 0.5, or a malformed declaration of
- *  this server's own. A host that sends a Request after all speaks 0.5, and
- *  its policy then decides, as any host's does. */
 export interface WakeBlocked { log: string; reason: string; remedy: string; final: boolean; }
 
 const ASK_FOR_WAKES = "Calling again won't change that; ask whoever runs this host if you need wakes.";
 
-/** The host has gone. Nothing more reaches this connection, so no agent reads
- *  `reason` or `remedy`; the log line is what says it. */
 export const HOST_GONE: WakeBlocked = {
   log: 'the connection to the host has closed',
   reason: 'the host has disconnected',
@@ -21,10 +11,6 @@ export const HOST_GONE: WakeBlocked = {
   final: true,
 };
 
-/** Why a wake can't be delivered right now, or null when it can.
- *  `notificationOnly`: the host has sent its policy only as a Notification,
- *  with no Request, as a pre-0.5 host does. `state` is read only once the
- *  host's policy has arrived. */
 export function wakeBlocked(
   mcplEnabled: boolean,
   notificationOnly: boolean,
@@ -92,9 +78,6 @@ export function wakeBlocked(
   }
 }
 
-/** What a due reminder does while no wake can be delivered, for reminder_list
- *  (`one` false) and for the reminder reminder_add has just set (`one` true).
- *  It waits until a wake can be delivered, unless none will come here. */
 export function heldNote(blocked: WakeBlocked, one: boolean): string {
   if (blocked.final) {
     return `No wake can be delivered on this host, because ${blocked.reason}, `

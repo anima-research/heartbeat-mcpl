@@ -1,23 +1,5 @@
-/**
- * Silent heartbeat delivery, with a fallback to ordinary message mode.
- *
- * Silent mode sends the host's silent-heartbeat marker: an empty push/event on
- * the `heartbeat` feature set with `origin: { source: 'heartbeat', silent: true }`.
- * A host honors it only when it implements silent wakes and this server is
- * configured under the exact id `heartbeat`. Anything else turns the marker
- * into an ordinary empty push. Hosts that reject empty pushes answer it with
- * JSON-RPC invalid params (-32602). For that tick, the heartbeat is sent again
- * in message mode, so the agent still wakes to a prompt it can read.
- *
- * No host advertises silent-wake support during initialize, so the rejection
- * is the only signal. A host that predates both silent wakes and empty-push
- * rejection accepts the empty push and gives the agent a wake with nothing in
- * it. That case cannot be detected from here; the README lists the
- * requirements.
- */
 import type { PushEventParams } from '@animalabs/mcpl-core';
 
-/** JSON-RPC invalid params: how a host refuses an empty push. */
 export const INVALID_PARAMS = -32602;
 
 /** agent-framework refuses an empty push with JSON-RPC -32602, or, where it can't answer with an

@@ -1,4 +1,3 @@
-// Exercise the built server through the same HostSession used by reminders.harness.mjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';
@@ -74,9 +73,6 @@ test('reminder_add uses the agent zone, not the process zone, and refuses ambigu
       });
     }
 
-    // A delay or interval past the last time a reminder can hold used to be
-    // saved before the log line threw on it, and from then on reminder_list
-    // threw for every reminder.
     for (const [args, reason] of [
       [{ inSeconds: 1e13 }, /"inSeconds" 10000000000000 puts it past \+275760-09-13T00:00:00Z, the last time a reminder can hold\. Give a shorter delay, or an atIso before then\.$/],
       [{ inHours: 1e306 }, /"inHours" 1e\+306 puts it past \+275760-09-13T00:00:00Z, the last time a reminder can hold\. Give a shorter delay, or an atIso before then\.$/],
@@ -151,14 +147,10 @@ test('a stored time a reminder can\'t hold is dropped at load, and a recurring r
       effectiveCapabilities: ['tools', 'pushEvents'], deniedCapabilities: [],
       enabled: ['heartbeat'], disabled: [],
     });
-    // rem_last is listed unless a slow start has let it fire and end already.
-    // The waits below show that it loaded and fired once.
     assert.deepEqual((await listed()).filter((id) => id !== 'rem_last'), ['rem_ok'], 'only the times a reminder can hold load');
-    // rem_last fires once, then ends, since its next time is past the last one.
     for (const deadline = Date.now() + 15_000; !fired.includes('rem_last') && Date.now() < deadline;) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    // It ends once the server has read the host's answer, a little after the push.
     for (const deadline = Date.now() + 5_000; (await listed()).includes('rem_last') && Date.now() < deadline;) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
