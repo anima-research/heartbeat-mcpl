@@ -1,6 +1,3 @@
-// Why a wake can't be delivered: the log keeps the protocol's terms for whoever
-// runs the host, and the agent gets plain words and what to do, since it can't
-// see the host's settings or act on the spec's sections.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { heldNote, wakeBlocked } from '../src/wake-blocked.js';

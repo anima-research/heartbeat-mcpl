@@ -83,7 +83,7 @@ test('a repeated hour whose later offset is zero names it as +00:00', () => {
 });
 
 test('a zero offset that Intl names as bare GMT is labelled +00:00', (t) => {
-  // ICU 78 (Node 20.20, 24.21) names a zero offset GMT+00:00; ICU 72 to 77 (Node 20.0 to 24.0) name it GMT.
+  // ICU 78 names a zero offset GMT+00:00, where ICU 76, which Node 22.12.0 has, names it GMT.
   const formatToParts = Intl.DateTimeFormat.prototype.formatToParts;
   t.mock.method(Intl.DateTimeFormat.prototype, 'formatToParts', function (this: Intl.DateTimeFormat, date?: Date | number) {
     return formatToParts.call(this, date).map((part) => (
@@ -206,8 +206,6 @@ test('out-of-range clock fields are refused, with an example that keeps the offs
 });
 
 test('for these days and zones, a time offered to copy for a day or a clock time is one atIso accepts, in the zone the refusal names', () => {
-  // Not on every day: on the first or last day a Date holds, or a day the zone
-  // skips whole, the clock refusal's 09:00 can be refused in turn.
   for (const [time, zone] of [
     ['2024-02-30T09:00:00', 'America/New_York'], ['2100-02-29T09:00+01:00', 'UTC'], ['2024-04-31T09:00Z', 'Asia/Kolkata'],
     ['2024-07-15T25:00', 'America/New_York'], ['2024-07-15T24:00:01', 'Europe/Berlin'], ['2024-07-15T09:60:00-04:00', 'UTC'],
@@ -217,8 +215,6 @@ test('for these days and zones, a time offered to copy for a day or a clock time
     try { parseReminderTime(time, zone); } catch (error) { message = (error as Error).message; }
     const copy = /like ("[^"]+")/.exec(message)?.[1];
     assert.ok(copy, `${time}: ${message}`);
-    // The copy keeps the offset the time was given with, or, given none, the
-    // refusal names the zone that reads it.
     const offset = /T[\d:.]+(Z|[+-][\d:]+)$/.exec(time)?.[1];
     if (offset) assert.ok(copy.endsWith(`${offset}"`) && !message.includes(', read in '), message);
     else assert.ok(message.includes(`${copy}, read in ${zone}`), message);
@@ -242,7 +238,6 @@ test('a day the calendar doesn\'t have is refused, naming it', () => {
       message: `"atIso" "${time}" names a day the calendar doesn't have, ${day}. Give a real date, like ${example}.`,
     }, time);
   }
-  // Every fourth year leaps, except centuries, except every fourth century.
   assert.equal(parseReminderTime('2024-02-29T00:00Z', 'UTC'), Date.parse('2024-02-29T00:00:00Z'));
   assert.equal(parseReminderTime('2000-02-29T00:00Z', 'UTC'), Date.parse('2000-02-29T00:00:00Z'));
 });
@@ -264,14 +259,12 @@ test('a real day and time past either end of the range is refused as out of rang
     message: `"atIso" "${time}"${zone ? `, read in ${zone},` : ''} is outside the times a reminder can hold, -271821-04-20T00:00:00Z to `
       + '+275760-09-13T00:00:00Z. Give a time inside that range.',
   });
-  // Past what a Date holds at all, and past it only once read in a zone west of UTC.
   for (const [time, zone] of [
     ['+275760-09-13T00:00:01', 'UTC'], ['+275760-09-14', 'UTC'], ['-271821-04-19T23:59', 'UTC'],
     ['+275760-09-13T00:00', 'America/New_York'],
   ]) {
     assert.throws(() => parseReminderTime(time, zone), outOfRange(time, zone), `${time} in ${zone}`);
   }
-  // A day a Date can't hold is refused even where 24:00 ends it at the first instant, as it was.
   assert.throws(() => parseReminderTime('-271821-04-19T24:00Z', 'UTC'), outOfRange('-271821-04-19T24:00Z', null));
 });
 
@@ -282,8 +275,6 @@ test('a reminder can hold exactly the times a Date can, both ends included, and 
   assert.equal(canHoldTime(-8.64e15 - 1), false);
   assert.equal(canHoldTime(Infinity), false);
   assert.equal(canHoldTime(Number.NaN), false);
-  // The refusals and log lines name the range with these, and the log test
-  // builds its expected lines from them, so they're pinned here.
   assert.equal(Date.parse(FIRST_REMINDER_TIME), -8.64e15);
   assert.equal(Date.parse(LAST_REMINDER_TIME), 8.64e15);
 });
@@ -292,9 +283,7 @@ test('the log keeps each reminder a stored time drops or ends, whole, with the r
   const now = Date.now();
   const row = (id: string, fireAt: number | null, everySeconds: number | null) =>
     ({ id, message: `the message of ${id}`, createdAt: now, fireAt, everySeconds });
-  // Past the range, the null JSON wrote for an infinite time, and below the
-  // range: each dropped at load. And a recurring reminder whose next time is
-  // past the last one, which ends once the host takes its push.
+  // JSON writes an infinite time as null.
   const dropped = [row('rem_far', now + 1e16, null), row('rem_null', null, null), row('rem_low', -9e15, 60)];
   const lastAt = now + 1000;
   const last = row('rem_last', lastAt, 1e13);
@@ -303,7 +292,6 @@ test('the log keeps each reminder a stored time drops or ends, whole, with the r
     await h.pushCount(1);
     const ended = `[heartbeat-mcpl] ended recurring reminder ${JSON.stringify(last)}: its next time, ${lastAt + 1e13 * 1000}, `
       + `is past ${LAST_REMINDER_TIME}, the last time a reminder can hold`;
-    // The end is logged once the server has read the host's answer, a little after the push.
     for (const deadline = Date.now() + 5_000; !h.stderr().split('\n').includes(ended) && Date.now() < deadline;) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
@@ -326,7 +314,6 @@ test('a stored row dropped for its time stays in the file until the next save, w
   const rows = [row('rem_far', now + 1e16), row('rem_null', null), row('rem_ok', now + 3_600_000)];
   const h = await serverWithHost(() => ({}), { reminders: rows });
   try {
-    // Once the list answers, the file has been read and the rows dropped.
     assert.doesNotMatch(await h.call('reminder_list'), /rem_far|rem_null/);
     assert.deepEqual(h.stored(), rows, 'loading writes nothing');
     await h.call('reminder_add', { message: 'later', inHours: 2 });

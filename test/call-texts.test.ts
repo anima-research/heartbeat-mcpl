@@ -1,5 +1,3 @@
-// What the agent reads when a tools/call names no tool here, or its tool
-// throws: what happened, and what to do next.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RpcError } from '@animalabs/mcpl-core';
@@ -23,25 +21,20 @@ test('a name that isn\'t a string is quoted as the call gave it', () => {
 
 test('a tool that threw says what failed, whether it can have changed anything, and what to do if it fails again', () => {
   assert.equal(toolThrew('reminder_add', new Error('disk full.')), `reminder_add failed inside heartbeat-mcpl: disk full. ${after}`);
-  // Anything can be thrown, so a value that isn't an Error is still answered.
   assert.equal(toolThrew(undefined, 'oops'), `The tool failed inside heartbeat-mcpl: oops. ${after}`);
-  // No two full stops, whatever whitespace comes between, and a description
-  // with nothing in it gets no colon.
   for (const message of ['disk full.. ', 'disk full. .', 'disk full.\n', 'disk full.\u00a0', '  disk full']) {
     assert.equal(toolThrew('reminder_add', new Error(message)), `reminder_add failed inside heartbeat-mcpl: disk full. ${after}`, JSON.stringify(message));
   }
   assert.equal(toolThrew('reminder_add', new Error('')), `reminder_add failed inside heartbeat-mcpl. ${after}`);
   assert.equal(toolThrew('reminder_add', ' . '), `reminder_add failed inside heartbeat-mcpl. ${after}`);
-  // A tool that only reads changed nothing, and says so.
   for (const tool of ['heartbeat_status', 'reminder_list']) {
     assert.equal(toolThrew(tool, new Error('disk full')), `${tool} failed inside heartbeat-mcpl: disk full. It only reads, so it changed `
       + 'nothing. If it fails the same way again, ask whoever runs this host.');
   }
-  // heartbeat_trigger may have sent its heartbeat, which neither tool shows.
   assert.equal(toolThrew('heartbeat_trigger', new Error('disk full')), 'heartbeat_trigger failed inside heartbeat-mcpl: disk full. '
     + 'It may have sent a heartbeat before it failed, so calling it again may send a second. If it fails the same way again, ask '
     + 'whoever runs this host.');
-  // A name an object has from its prototype is no tool's.
+  // An object literal inherits constructor from Object.prototype.
   assert.equal(toolThrew('constructor', new Error('disk full')), `constructor failed inside heartbeat-mcpl: disk full. ${after}`);
 });
 
@@ -76,9 +69,6 @@ test('the log has a thrown Error\'s stack, or else the value\'s description, wit
   const error = new Error('disk full');
   assert.equal(thrownForLog(error), error.stack);
   assert.equal(thrownForLog({ code: 'EIO' }), '{"code":"EIO"}');
-  // A stack that isn't a string leaves the description. The stack is read
-  // once, so a getter that gives a string and then something else gives the
-  // log the string.
   const unstacked = new Error('disk full');
   Object.defineProperty(unstacked, 'stack', { value: 5 });
   assert.equal(thrownForLog(unstacked), 'disk full');
@@ -92,9 +82,6 @@ test('the log has a thrown Error\'s stack, or else the value\'s description, wit
 });
 
 test('through the server, a tool that throws is answered with that text, after it may have changed something, and logged', async (t) => {
-  // format-fault.mjs makes formatting 2099-01-01T09:00Z throw an Error, and
-  // 2099-01-02T09:00Z throw undefined. reminder_add saves each reminder, then
-  // formats its time for the reply.
   const fault = `--import=${new URL('./format-fault.mjs', import.meta.url).href}`;
   const h = await serverWithHost(() => ({}), { env: { NODE_OPTIONS: [process.env.NODE_OPTIONS, fault].filter(Boolean).join(' ') } });
   t.after(h.close);
@@ -110,11 +97,9 @@ test('through the server, a tool that throws is answered with that text, after i
     assert.equal(error.message.replace(`RPC error ${error.code}: `, ''), `reminder_add failed inside heartbeat-mcpl: ${why}. ${after}`);
     await logged(h, `reminder_add threw: ${inLog}`);
   }
-  // The Error's stack follows its line in the log.
   const lines = h.stderr().split('\n');
   const at = lines.indexOf('[heartbeat-mcpl] reminder_add threw: Error: a fault this test put in formatToParts');
   assert.match(lines[at + 1] ?? '', /^\s+at /, h.stderr());
   assert.deepEqual(h.stored().map((r) => r.message), ['2099-01-01T09:00Z', '2099-01-02T09:00Z'], 'each was saved before its call failed');
-  // A thrown value that isn't an Error leaves the server answering.
   assert.match(await h.call('heartbeat_status'), /^Heartbeat ACTIVE \| /);
 });

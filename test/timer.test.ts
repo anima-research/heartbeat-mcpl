@@ -1,6 +1,5 @@
-// callAt reaches a time past setTimeout's limit in steps. Node's mock timers,
-// like its real ones, wait 1 ms when asked to wait longer than MAX_TIMEOUT_MS,
-// so a single overlong setTimeout fails the first test.
+// Node's timers, mock or real, wait 1 ms when asked to wait longer than
+// MAX_TIMEOUT_MS, so a single overlong setTimeout fails the first test.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MAX_TIMEOUT_MS, callAt } from '../src/timer.js';

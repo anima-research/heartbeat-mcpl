@@ -1,7 +1,3 @@
-// At the server: no save loses a reminders or config file it can't use, and no
-// reply presents a change or a store as saved when it isn't. On main, either
-// file loaded as empty or as the defaults when it couldn't be used, and the
-// next save wrote over it, so what it held was lost.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -23,12 +19,10 @@ const configNotLoaded = "The config file couldn't be used at start, so the sched
   + 'ask whoever runs this host.';
 const replacedText = (what: string) => `Some text in the ${what} file couldn't be read, so it was loaded with replacement characters `
   + '(\ufffd) in its place. The original is kept; ask whoever runs this host if you need it.';
-// Root reads and writes a file whatever its mode.
 const asRoot = process.getuid?.() === 0 ? 'root reads and writes a file whatever its mode' : false;
 const row = { id: 'rem_ok', message: 'ok', createdAt: Date.now(), fireAt: Date.now() + 3_600_000, everySeconds: null };
 
-/** Wait for a line of the server's log to match `pattern`: the log comes down
- *  its own pipe, so it may arrive after the reply that followed it. */
+/** The log comes down its own pipe, so it can arrive after the reply that followed it. */
 async function inLog(h: { stderr: () => string }, pattern: RegExp) {
   for (const deadline = Date.now() + 5_000; !pattern.test(h.stderr());) {
     assert.ok(Date.now() < deadline, `expected the log to match ${pattern}, in\n${h.stderr()}`);
@@ -77,7 +71,6 @@ test('a reminders file that can\'t be read is left alone, and replies say a chan
   const list = await h.call('reminder_list');
   assert.match(list, new RegExp(`^${id} \\|`, 'm'), 'it is held in memory meanwhile');
   assert.ok(list.endsWith(`\n${noneLoaded}`), list);
-  // An id this start doesn't hold may be in the file.
   const refused = await h.call('reminder_cancel', { id: 'rem_from_before' });
   assert.ok(refused.endsWith(`No reminder held here has the id "rem_from_before". If it was a one-off that has fired, or it was cancelled `
     + `already, there's nothing more to do. Otherwise, reminder_list shows the pending ids held here. ${noneLoaded}`), refused);
@@ -115,7 +108,6 @@ test('a save that fails on a file the server read is said in the reply, and a la
   const updated = await h.call('heartbeat_configure', { paused: true });
   assert.ok(updated.startsWith(`Updated. ${failed('config')} Heartbeat PAUSED | `), updated);
   assert.deepEqual(JSON.parse(readFileSync(h.files.config, 'utf8')), { paused: false }, 'the config is as it was');
-  // Once the files take writes again, the next change saves the earlier ones with it.
   chmodSync(h.files.reminders, 0o600);
   chmodSync(h.files.config, 0o600);
   assert.doesNotMatch(await h.call('reminder_add', { message: 'sooner', inMinutes: 5 }), /saved/);
@@ -149,7 +141,6 @@ test('a config that can\'t be read is left alone, and heartbeat_configure says i
   const status = await h.call('heartbeat_status');
   assert.match(status, /^Heartbeat PAUSED/, 'it applies in memory meanwhile');
   assert.ok(status.endsWith(`\n${configNotLoaded}`), status);
-  // A call that sets nothing has nothing to save.
   const unchanged = await h.call('heartbeat_configure');
   assert.ok(unchanged.startsWith('No changes. Heartbeat PAUSED | ') && !unchanged.includes('saved,'), unchanged);
   assert.ok(statSync(h.files.config).isDirectory(), 'nothing was saved over it');
@@ -186,7 +177,7 @@ test('a reminders file that starts with a byte order mark loads as it is, and th
 });
 
 test('a reminders file with bytes that aren\'t UTF-8 is copied aside, and its reminders load with replacement characters', async (t) => {
-  // 0xe9 is é in Latin-1, as an editor in that encoding saves it, and no character in UTF-8.
+  // 0xe9 is é in Latin-1, and no character in UTF-8.
   const bytes = Buffer.from(JSON.stringify([{ ...row, message: 'caf\u00e9' }]), 'latin1');
   const h = await serverWithHost(() => ({}), { prepare: ({ reminders }) => writeFileSync(reminders, bytes) });
   t.after(h.close);
@@ -198,11 +189,9 @@ test('a reminders file with bytes that aren\'t UTF-8 is copied aside, and its re
   await inLog(h, /the reminders file .* holds bytes that aren't UTF-8; copied it to .*, and starting with what it holds, read with replacement characters/);
   const [copy] = copies(h.files.dir, 'reminders.json');
   assert.ok(readFileSync(`${h.files.dir}/${copy}`).equals(bytes), 'the copy holds the bytes');
-  // The next save goes through, and writes the store as it holds it.
   assert.doesNotMatch(await h.call('reminder_add', { message: 'later', inHours: 1 }), /saved/);
   assert.deepEqual(h.stored().map((r) => r.message).sort(), ['caf\ufffd', 'later']);
   assert.ok(readFileSync(`${h.files.dir}/${copy}`).equals(bytes), 'and the copy still holds the bytes');
-  // reminder_cancel's replies carry the note too. Every row loaded, so the refusal's pending ids are all of them.
   const refused = await h.call('reminder_cancel', { id: 'rem_gone' });
   assert.ok(refused.endsWith('No reminder has the id "rem_gone". If it was a one-off that has fired, or it was cancelled already, '
     + `there's nothing more to do. Otherwise, reminder_list shows the pending ids. ${replacedText('reminders')}`), refused);
@@ -260,7 +249,6 @@ test('files with bytes that aren\'t UTF-8, whose copies can\'t be made, load, an
 });
 
 test('a file that can\'t be copied aside is left alone, as one that can\'t be read is', async (t) => {
-  // A directory where its copy would go: the copy fails, so saving over the file would lose it.
   const copyPath = (path: string, text: string) => `${path}.unreadable-${createHash('sha256').update(text).digest('hex').slice(0, 12)}`;
   const h = await serverWithHost(() => ({}), {
     prepare: ({ reminders, config }) => {
@@ -273,7 +261,6 @@ test('a file that can\'t be copied aside is left alone, as one that can\'t be re
   t.after(h.close);
   assert.ok((await h.call('reminder_add', { message: 'later', inHours: 1 })).endsWith(` ${unsaved('reminders', 'uncopied')}`));
   assert.ok((await h.call('heartbeat_configure', { paused: true })).startsWith(`Updated. ${unsaved('config', 'uncopied')} Heartbeat PAUSED | `));
-  // Neither store holds what its file did, and the replies that show them say so.
   assert.ok((await h.call('reminder_list')).endsWith(`\n${noneLoaded}`));
   const status = await h.call('heartbeat_status');
   assert.ok(status.endsWith(`"\n${configNotLoaded}\n${noneLoaded}`), status);
@@ -296,7 +283,6 @@ test('a reminders file with a row that isn\'t a reminder is copied aside, and th
   assert.ok(readFileSync(`${h.files.dir}/${copy}`).equals(held), 'the copy holds the file as it was');
   await h.call('reminder_add', { message: 'later', inHours: 1 });
   assert.deepEqual(h.stored().map((r) => r.id).filter((id) => id === 'rem_ok'), ['rem_ok'], 'the save keeps the rest');
-  // A start on what that save wrote loads it whole, and copies nothing.
   const saved = readFileSync(h.files.reminders, 'utf8');
   const again = await serverWithHost(() => ({}), { prepare: ({ reminders }) => writeFileSync(reminders, saved) });
   t.after(again.close);
@@ -305,7 +291,7 @@ test('a reminders file with a row that isn\'t a reminder is copied aside, and th
 });
 
 test('a reminders file with a row whose time can\'t be held is copied aside the same way', async (t) => {
-  // One past a Date's range, and the null JSON wrote for one too large for a number.
+  // Past a Date's range, and the null JSON writes for a time too large for a number.
   const far = { ...row, id: 'rem_far', fireAt: Date.now() + 1e16 };
   const never = { ...row, id: 'rem_never', fireAt: null };
   const h = await serverWithHost(() => ({}), { reminders: [row, far, never] });

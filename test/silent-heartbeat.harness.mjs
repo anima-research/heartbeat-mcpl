@@ -23,7 +23,6 @@ const session = new HostSession({ command: 'node', args: [server, '--stdio'], en
 const pushes = [];
 session.on('event', (ev) => { if (ev.kind === 'push') pushes.push(ev.data); });
 const check = (cond, msg) => { if (!cond) throw new Error(msg); console.log(`ok - ${msg}`); };
-/** The first push from `source`, waiting for one up to `ms`. */
 const pushFrom = async (source, ms) => {
   const until = Date.now() + ms;
   let push;
@@ -50,7 +49,6 @@ try {
   await session.callTool('reminder_add', { message: 'REMINDER-TEXT', inSeconds: 5 });
   const rem = await pushFrom('reminder', 15_000);
   check(!!rem, 'reminder fires in silent mode');
-  // A fired reminder's text is its message behind a [reminder …] header.
   const remText = rem?.payload?.content?.[0]?.text ?? '';
   check(remText.startsWith('[reminder ') && remText.endsWith('] REMINDER-TEXT'), 'reminders remain message-bearing');
 
