@@ -18,16 +18,14 @@ function isCalendarDay(year: number, month: number, day: number): boolean {
   return day <= [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
 }
 
-/** Whether a clock shows this time: 00:00 to 23:59:59, or ISO's 24:00 for the end of the day. */
+/** ISO 8601 reads 24:00 as the end of the day. */
 function isClockTime(hour: number, minute: number, second: number, fraction: number): boolean {
   if (hour === 24) return minute === 0 && second === 0 && fraction === 0;
   return hour <= 23 && minute <= 59 && second <= 59;
 }
 
-/** A UTC offset in milliseconds, or null if it isn't one: ±hh, ±hh:mm or ±hhmm,
- *  with seconds (±hh:mm:ss, ±hhmmss) for the historical offsets Intl names, and
- *  one separator style throughout. Intl's names carry a GMT prefix, and ICU 72 to
- *  77 (Node 20.0 to 24.0) name the zero offset GMT alone. */
+/** Intl names offsets with a GMT prefix, with seconds for the historical ones, and ICU 76,
+ *  which Node 22.12.0 has, names the zero offset GMT alone. */
 function offsetMilliseconds(offset: string): number | null {
   if (/^(Z|GMT)$/i.test(offset)) return 0;
   const match = /^(?:GMT)?([+-])(\d{2})(?:(:?)(\d{2})(?:\3(\d{2}))?)?$/.exec(offset);
@@ -44,7 +42,7 @@ function offsetMilliseconds(offset: string): number | null {
 export function parseReminderTime(atIso: string, timeZone: string): number {
   const shown = JSON.stringify(atIso);
   const parts = /^([+-]\d{6}|\d{4})-(\d{2})-(\d{2})(?:[Tt ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?([Zz]|[+-][\d:]+)?)?$/.exec(atIso);
-  // ISO forbids -000000 for year zero.
+  // ECMAScript's date-time format refuses -000000 for year zero.
   if (!parts || parts[1] === '-000000') {
     throw new Error(`"atIso" ${shown} isn't a time this tool reads. Give a date and time like "2030-07-15T09:00", read in `
       + `${timeZone}, or end it with an offset, like "2030-07-15T09:00Z" or "2030-07-15T09:00+01:00". A date alone is `
@@ -73,8 +71,7 @@ export function parseReminderTime(atIso: string, timeZone: string): number {
   }
   const outOfRange = new Error(`"atIso" ${shown}${readIn ? `${readIn},` : ''} is outside the times a reminder can hold, `
     + `${FIRST_REMINDER_TIME} to ${LAST_REMINDER_TIME}. Give a time inside that range.`);
-  // A real day and time that a Date can't hold, or on a day it can't hold, is
-  // past one end of its range. ISO's 24:00 advances the date.
+  // Date.parse reads 24:00 as the start of the next day.
   const wall = Date.parse(`${calendarDate}T${parts[4] ?? '00'}:${parts[5] ?? '00'}:${parts[6] ?? '00'}.${(parts[7] ?? '0').slice(0, 3).padEnd(3, '0')}Z`);
   if (!Number.isFinite(Date.parse(`${calendarDate}T00:00:00Z`)) || !Number.isFinite(wall)) throw outOfRange;
 
@@ -98,8 +95,7 @@ export function parseReminderTime(atIso: string, timeZone: string): number {
     return { ms: offset, label: name === 'GMT' ? '+00:00' : name.slice(3) };
   };
 
-  // Offsets on either side cover ordinary times and both sides of a transition.
-  // Validate each candidate at its own instant: a gap has none, a fold has two.
+  // Around a clock change a wall time has no instant (a gap) or two (a fold).
   const offsets = new Map<number, string>();
   for (const delta of [-DAY_MS, DAY_MS]) {
     const sample = Math.abs(wall + delta) <= MAX_DATE_MS ? wall + delta : wall;

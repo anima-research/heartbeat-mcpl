@@ -11,13 +11,9 @@ export function isValidTimeZone(zone: string): boolean {
   }
 }
 
-/** Resolve the zone used for agent-visible timestamps, and for reading a
- *  reminder's offset-less atIso (src/reminder-time.ts). NEVER throws: this is
- *  evaluated at module scope, so a typo'd AGENT_TIMEZONE would kill the stdio
- *  child during import — before the MCPL handshake — and a dead MCPL
- *  subprocess is never respawned by reconnect. Instead, warn loudly on stderr
- *  and fall back to the same default used when the variable is unset
- *  (system zone → UTC). */
+/** AGENT_TIMEZONE names the zone for agent-visible times and for reading an offset-less
+ *  atIso, trimmed. One this runtime can't format in is warned of on stderr, and the system
+ *  zone, or UTC where there is none, is used, as when it's unset. */
 export function resolveAgentTimeZone(configured = process.env.AGENT_TIMEZONE): string {
   const fallback = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   const zone = configured?.trim();

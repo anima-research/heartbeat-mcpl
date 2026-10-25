@@ -109,7 +109,7 @@ test('every argument is applied, or the call is refused and changes nothing', as
   });
 
   await t.test('the heartbeat interval may reach the last time a Date holds, and not past it', async () => {
-    // From now to +275760-09-13T00:00:00Z, in whole seconds; an hour either side of it.
+    // 8.64e15 ms, +275760-09-13T00:00:00Z, is the last time a Date holds.
     const room = Math.floor((8.64e15 - Date.now()) / 1000);
     const within = await call('heartbeat_configure', { intervalSeconds: room - 3600 });
     assert.equal(within.isError, false, within.text);
@@ -202,9 +202,7 @@ test('every argument is applied, or the call is refused and changes nothing', as
 
   await t.test('a fraction of a second is kept to the millisecond, in the first fire and each advance', async () => {
     const later = await add({ inSeconds: 8.001 }, 8001);
-    // Exactly: the server stamps both from one clock reading, and 8.001 * 1000 is 8000.999999999999, which added to
-    // a time of an epoch's size rounds to 8001. The window alone passes a delay rounded to 8 s whenever the server
-    // reads its clock a millisecond or more after the call began.
+    // 8.001 * 1000 is 8000.999999999999, which rounds to 8001 when added to a time of an epoch's size.
     assert.equal(later.fireAt, later.createdAt + 8001, 'a first fire 8.001 s on');
     assert.equal((await call('reminder_cancel', { id: later.id })).isError, false);
     const repeating = await call('reminder_add', { message: 'x', inSeconds: 0, everySeconds: 8.001 });

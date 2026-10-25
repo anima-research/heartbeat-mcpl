@@ -184,11 +184,9 @@ export function givenText(length: Length, verbs: [one: string, several: string] 
   return `${givenList(length)} ${length.given.length < 2 ? verbs[0] : verbs[1]}`;
 }
 
-// closestNames, isNearMiss, noiseLimit and editDistance, from here to the end
-// of this file, are agent-framework's closest-names helper
-// (src/closest-names.ts), copied unchanged rather than imported, since it
-// isn't published, so this server and agent-framework decide near misses and
-// rank suggestions the same way.
+// closestNames, isNearMiss, noiseLimit and editDistance, from here to the end of this file, are
+// agent-framework's src/closest-names.ts, copied since agent-framework doesn't export it, so this
+// server and agent-framework decide near misses and rank suggestions the same way.
 
 /**
  * The names someone most likely meant, when the one they gave matches none:
@@ -223,7 +221,7 @@ export function closestNames(name: string, candidates: readonly string[], max = 
     if (distance > limit) continue;
     ranked.push({ candidate, tier, distance });
   }
-  // A stable sort: candidates that tie keep the order they were given in.
+  // Array.prototype.sort is stable, so candidates that tie keep the order they were given in.
   ranked.sort((a, b) => a.tier - b.tier || a.distance - b.distance);
   return ranked.slice(0, Math.max(0, max)).map((entry) => entry.candidate);
 }

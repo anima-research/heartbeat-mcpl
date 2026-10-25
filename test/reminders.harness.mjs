@@ -1,18 +1,6 @@
-// End-to-end test for the reminder scheduler, driven through the real MCPL host
-// harness (mcpl-harness HostSession) against the BUILT heartbeat-mcpl server.
-//
-// Proves the four behaviors from the A4 test plan:
-//   1. one-shot fires exactly once at due
-//   2. recurring fires on cadence; cancel silences it
-//   3. a pending reminder survives a server restart
-//
-// Since MCPL 0.5 the server delivers no push/event until the host has sent the
-// initial policy as a Request (SPEC §5.3) — so this test sends it, and asserts
-// the degradation receipt that comes back (§6.7). `session.updateFeatureSets()`
-// is the Notification form and deliberately cannot establish ready state, hence
-// `session.raw(...)` here.
-//
-// Run:  node --import tsx test/reminders.harness.mjs   (from the heartbeat-mcpl dir)
+// MCPL 0.5 delivers no push/event until the host has sent the initial policy as
+// a Request (SPEC §5.3). session.updateFeatureSets() sends the Notification form,
+// which can't establish that (§6.7), hence session.raw(...) here.
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,11 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 
-// mcpl-harness is not published to npm, so HostSession is loaded from a
-// checkout. Resolution order: $MCPL_HARNESS_SESSION (explicit path to
-// src/session.ts), then a sibling checkout next to this repo (what CI clones
-// — see .github/workflows/ci.yml and publish.yml), then known dev-box
-// locations.
+// mcpl-harness isn't published to npm, so HostSession is loaded from a checkout.
 const HARNESS_CANDIDATES = [
   process.env.MCPL_HARNESS_SESSION,
   join(HERE, '..', '..', 'mcpl-harness', 'src', 'session.ts'),

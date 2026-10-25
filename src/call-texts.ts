@@ -13,9 +13,8 @@ export function noSuchTool(name: unknown, tools: readonly string[]): string {
  *  throw, for an object whose JSON or string form throws. */
 const asText = (value: unknown) => (typeof value === 'object' && value !== null ? JSON.stringify(value) : undefined) ?? String(value);
 
-/** A thrown value as text. Anything can be thrown, not only an Error, and this
- *  runs where a call is answered, so it never throws itself: even reading an
- *  Error's message can throw, and the message need not be a string. */
+/** Anything can be thrown, not only an Error, and even reading an Error's message can throw,
+ *  or give something that isn't a string. */
 export function describeThrown(thrown: unknown): string {
   try {
     if (thrown instanceof Error) {
@@ -28,9 +27,7 @@ export function describeThrown(thrown: unknown): string {
   }
 }
 
-/** A thrown value for the log: an Error's stack, which says where it was
- *  thrown, or else its description. It never throws either, and reads the
- *  stack once, since a getter needn't give the same thing twice. */
+/** Reads the stack once, since a getter needn't give the same thing twice. */
 export function thrownForLog(thrown: unknown): string {
   try {
     if (thrown instanceof Error) {

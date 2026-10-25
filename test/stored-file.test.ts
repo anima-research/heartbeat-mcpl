@@ -132,8 +132,7 @@ test('a file whose copy can\'t be made is kept as one that can\'t be read is', (
 });
 
 test('a file at the copy\'s name that holds something else is never taken for the copy, nor written over', (t) => {
-  // Something else, and bytes that differ from the file's though they decode
-  // to the same text: 0xff and 0xfe are each invalid UTF-8, read as U+FFFD.
+  // 0xff and 0xfe are each invalid UTF-8, read as U+FFFD.
   const cases: [Buffer, Buffer, string][] = [
     [Buffer.from('not json'), Buffer.from('something else'), "isn't JSON"],
     [Buffer.from([0x5b, 0xff]), Buffer.from([0x5b, 0xfe]), "isn't JSON"],

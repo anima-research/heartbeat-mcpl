@@ -27,8 +27,7 @@ const replacedText = (what: string) => `Some text in the ${what} file couldn't b
 const asRoot = process.getuid?.() === 0 ? 'root reads and writes a file whatever its mode' : false;
 const row = { id: 'rem_ok', message: 'ok', createdAt: Date.now(), fireAt: Date.now() + 3_600_000, everySeconds: null };
 
-/** Wait for a line of the server's log to match `pattern`: the log comes down
- *  its own pipe, so it may arrive after the reply that followed it. */
+/** The log comes down its own pipe, so it can arrive after the reply that followed it. */
 async function inLog(h: { stderr: () => string }, pattern: RegExp) {
   for (const deadline = Date.now() + 5_000; !pattern.test(h.stderr());) {
     assert.ok(Date.now() < deadline, `expected the log to match ${pattern}, in\n${h.stderr()}`);
@@ -186,7 +185,7 @@ test('a reminders file that starts with a byte order mark loads as it is, and th
 });
 
 test('a reminders file with bytes that aren\'t UTF-8 is copied aside, and its reminders load with replacement characters', async (t) => {
-  // 0xe9 is é in Latin-1, as an editor in that encoding saves it, and no character in UTF-8.
+  // 0xe9 is é in Latin-1, and no character in UTF-8.
   const bytes = Buffer.from(JSON.stringify([{ ...row, message: 'caf\u00e9' }]), 'latin1');
   const h = await serverWithHost(() => ({}), { prepare: ({ reminders }) => writeFileSync(reminders, bytes) });
   t.after(h.close);
@@ -305,7 +304,7 @@ test('a reminders file with a row that isn\'t a reminder is copied aside, and th
 });
 
 test('a reminders file with a row whose time can\'t be held is copied aside the same way', async (t) => {
-  // One past a Date's range, and the null JSON wrote for one too large for a number.
+  // Past a Date's range, and the null JSON writes for a time too large for a number.
   const far = { ...row, id: 'rem_far', fireAt: Date.now() + 1e16 };
   const never = { ...row, id: 'rem_never', fireAt: null };
   const h = await serverWithHost(() => ({}), { reminders: [row, far, never] });

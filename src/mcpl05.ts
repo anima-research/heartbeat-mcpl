@@ -1,24 +1,11 @@
 /**
- * MCPL 0.5 wire shapes and policy derivation.
- *
- * `@animalabs/mcpl-core@0.2.1` still carries the 0.4 shapes: its
- * `FeatureSetDeclaration` requires the removed `hostState` and carries a `name`
- * member the 0.5 schema does not define (App. B.2), its `FeatureSetsUpdateParams`
- * has no `effectiveCapabilities`/`deniedCapabilities`, and there is no
- * degradation-receipt type. Nothing is published yet, so the types below are
- * written against SPEC.md (0.5.0-draft) directly and this module is the single
- * place that has to change when the core library catches up.
- *
- * Everything here is pure — no I/O, no connection state — so the fail-closed
- * derivation can be unit-tested (test/policy.test.ts).
+ * @animalabs/mcpl-core 0.2.1 carries MCPL 0.4's shapes: its FeatureSetDeclaration requires the
+ * removed hostState and carries a name, its FeatureSetsUpdateParams has no effectiveCapabilities
+ * or deniedCapabilities, and it has no receipt type. So this module declares the MCPL types itself.
  */
 
-/**
- * The complete `uses` vocabulary — SPEC §6.2 / App. B.2. This list is closed:
- * `uses` MUST contain only these values, and a declaration carrying anything else
- * is invalid (§6.4.1). Typing our declaration against it means a future feature
- * set cannot quietly invent a path.
- */
+/** SPEC §6.2's uses vocabulary, which is closed: a declaration whose uses holds anything else
+ *  is invalid. */
 export const CAPABILITY_PATHS = [
   'pushEvents',
   'tools',
@@ -47,23 +34,7 @@ export function isCapabilityPath(value: unknown): value is CapabilityPath {
   return typeof value === 'string' && CAPABILITY_PATH_SET.has(value);
 }
 
-/**
- * A feature-set declaration — SPEC §6.1, §6.2, App. B.2 (`required:
- * ["description", "uses"]`), plus `rollback` from §8.1. `hostState` was removed
- * in 0.4.1 and is gone.
- *
- * NOTE ON THE WIRE SHAPE. §6.1 and App. B.2 declare `featureSets` as an **object
- * keyed by name**, with no `name` member on the declaration. This server still
- * ships the 0.4 array-of-`{name, …}` form, because that is what the ecosystem
- * currently reads:
- *   - agent-framework accepts both (mcpl/feature-set-manager.ts:154-161);
- *   - mcpl-harness accepts **only** the array (src/session.ts:493-497) and
- *     throws `(decls ?? []) is not iterable` on the object form.
- * Switching unilaterally would break this repo's own e2e host, and the manifest
- * shape also feeds the §17.2 canonical digest, so it is an ecosystem migration
- * rather than a one-server edit. Filed as a finding on issue #3; nothing here
- * depends on which shape is used.
- */
+/** SPEC §6.1, §6.2 and App. B.2's feature-set declaration, with rollback from §8.1. */
 export interface FeatureSetDeclaration05 {
   description: string;
   uses: CapabilityPath[];
@@ -87,12 +58,8 @@ export interface FeatureSetsUpdateParams05 {
   disabled?: unknown;
 }
 
-/**
- * The server's advertisement — SPEC §5.1. Advertisement mirrors the capability
- * paths, and `false` or absence means none: this server advertises `pushEvents`
- * and nothing else, so every other capability is simply absent. `tools` rides on
- * MCP's own `capabilities.tools` and is not repeated inside the MCPL block.
- */
+/** SPEC §5.1: advertisement mirrors the capability paths, and false or absence means none.
+ *  tools is MCP's own capabilities.tools, not repeated in the MCPL block. */
 export interface McplServerCapabilities05 {
   version: string;
   /** §17.2 canonical content digest. Omitted: this server's manifest is fixed
@@ -121,8 +88,7 @@ export interface UnavailableFeature {
   effect: 'disabled';
 }
 
-/** The degradation receipt — SPEC §6.7. Testimony about consequences, never a
- *  claim of entitlement: the host MUST NOT widen a grant because of it. */
+/** SPEC §6.7: testimony about consequences, never a claim of entitlement. */
 export interface AcceptedReceipt {
   accepted: true;
   mode: 'full' | 'degraded';
@@ -188,20 +154,7 @@ function stringArray(value: unknown, field: string): { ok: true; value: string[]
   return { ok: true, value: value as string[] };
 }
 
-/**
- * Match one capability path against one grant pattern.
- *
- * §5.4: "Matching is over full paths with `*` wildcards, and implementations
- * MUST perform a **generic recursive walk** — a hardcoded set of nestable keys is
- * non-conforming, since the vocabulary is depth 3 and will grow." So this splits
- * on `.` and walks segments generically; it knows nothing about which keys nest.
- *
- * The spec does not say whether `*` spans one segment or a whole subtree, so the
- * narrow reading is used: `*` matches exactly one segment. `channels.*` therefore
- * grants `channels.publish` but `contextHooks.*` grants none of the depth-4
- * injection leaves, and a bare `*` matches only depth-1 paths. Erring here can
- * only deny a capability the host meant to give, never grant one it did not.
- */
+/** SPEC §5.4: * matches exactly one path segment, and segment counts must be equal. */
 export function capabilityMatches(pattern: string, path: string): boolean {
   const p = pattern.split('.');
   const q = path.split('.');
@@ -232,18 +185,9 @@ export function capabilityGranted(grant: Grant, path: CapabilityPath): boolean {
 }
 
 /**
- * Validate `featureSets/update` params (§5.3, §5.4).
- *
- * Fail-closed at every step: a malformed message yields no grant at all rather
- * than a partial one. §5.4 makes one contradiction explicitly fatal — a path
- * present in both `effectiveCapabilities` and `deniedCapabilities` means the
- * receiver "MUST fail closed and reject the policy message as malformed".
- *
- * Absent `effectiveCapabilities` is *not* malformed: §5.4 says every path not
- * present is denied and there is no unspecified state, so an absent list is a
- * grant of nothing. §5.3 requires the host to send policy "even when nothing is
- * enabled or disabled", and a server defaulted to fully disabled still has to be
- * told — so this parses, and the receipt reports the degradation.
+ * SPEC §5.4: a path in both effectiveCapabilities and deniedCapabilities makes the message
+ * malformed, and the receiver MUST fail closed. An absent effectiveCapabilities is a grant of
+ * nothing (§5.3), not a malformed message.
  */
 export function parsePolicy(rawParams: unknown): PolicyParse {
   if (rawParams !== undefined && (typeof rawParams !== 'object' || rawParams === null || Array.isArray(rawParams))) {
@@ -294,7 +238,7 @@ export function parsePolicy(rawParams: unknown): PolicyParse {
   };
 }
 
-/** §6.3 feature-set name matching: exact, or a `foo.*` prefix wildcard. */
+/** SPEC §6.3's feature-set name matching. */
 export function featureSetMatches(pattern: string, name: string): boolean {
   if (pattern === name || pattern === '*') return true;
   if (pattern.endsWith('.*')) {
@@ -371,19 +315,8 @@ export function buildReceipt(decls: FeatureSetMap, grant: Grant): AcceptedReceip
   };
 }
 
-/**
- * Narrow an existing grant by another one — used for the Notification form of
- * `featureSets/update`.
- *
- * §6.7: a Notification "cannot establish a ready state" and is valid only for
- * metadata "that does not alter the grant", while §6.7 also requires servers to
- * "immediately respect a reduction". Intersecting satisfies both: a Notification
- * can only ever take capability away.
- *
- * Every dimension narrows, including `enabled` — an incoming list is applied
- * even when we currently hold none, because null means "unconstrained" and
- * adding a constraint is a reduction.
- */
+/** SPEC §6.7: a Notification can't establish a ready state, and a server MUST immediately respect
+ *  a reduction. */
 export function narrowGrant(current: Grant, incoming: Grant, incomingHasCapabilities: boolean): Grant {
   const paths = incomingHasCapabilities
     ? new Set<CapabilityPath>([...current.paths].filter((p) => incoming.paths.has(p)))

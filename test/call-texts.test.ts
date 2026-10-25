@@ -41,7 +41,7 @@ test('a tool that threw says what failed, whether it can have changed anything, 
   assert.equal(toolThrew('heartbeat_trigger', new Error('disk full')), 'heartbeat_trigger failed inside heartbeat-mcpl: disk full. '
     + 'It may have sent a heartbeat before it failed, so calling it again may send a second. If it fails the same way again, ask '
     + 'whoever runs this host.');
-  // A name an object has from its prototype is no tool's.
+  // An object literal inherits constructor from Object.prototype.
   assert.equal(toolThrew('constructor', new Error('disk full')), `constructor failed inside heartbeat-mcpl: disk full. ${after}`);
 });
 

@@ -47,17 +47,13 @@ function rejections(conn: McplConnection): Error[] {
   return seen;
 }
 
-/** The refusal for a push that failed with `error`: "the push failed: " and the
- *  error's message, without the "RPC error <code>: " that mcpl-core 0.2 starts
- *  an RpcError's message with. The error answer below pins that with a message
- *  of the test's own. The timeout and the closed connection take mcpl-core's
- *  message from the error, since its words are mcpl-core's to change. */
+/** mcpl-core 0.2 starts an RpcError's message with "RPC error <code>: ". */
 function failedWith(error: Error): string {
   const why = error instanceof RpcError ? error.message.replace(`RPC error ${error.code}: `, '') : error.message;
   return `the push failed: ${why}`;
 }
 
-/** Let what is due without the clock moving run: promise callbacks and I/O. */
+/** setImmediate isn't among the timers these tests mock, so this runs promise callbacks and I/O without moving the clock. */
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 test('each answer is told apart: taken, refused with or without a reason, or an error; only accepted: false refuses', async (t) => {

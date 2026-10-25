@@ -161,8 +161,7 @@ function saveConfig(c: HeartbeatConfig): string | null {
   }
 }
 
-/** A reminder as the file may hold it: earlier versions saved a time too large
- *  for a number, which JSON writes as null. */
+/** JSON writes a time too large for a number as null. */
 type StoredReminder = Omit<Reminder, 'fireAt'> & { fireAt: number | null };
 /** Structural guard so a corrupt/hand-edited reminders file can't crash the
  *  server or inject malformed entries — bad rows are dropped, good ones kept. */
@@ -191,12 +190,7 @@ function loadReminders(): Reminder[] {
     log(`dropped reminder ${JSON.stringify(x)}: it isn't a reminder this server writes`);
     return false;
   });
-  // A stored time outside a Date's range can't be listed, since formatting
-  // it throws, and that took reminder_list down for every reminder. One
-  // past the range, or the null JSON wrote for one too large for a number,
-  // could never fire; reminder_add saved such times before it checked
-  // them. One below the range is dropped the same way. The log line keeps
-  // the row, message and all.
+  // Formatting a time outside a Date's range throws, so such a row can't be listed.
   const holdable = rows.filter((r): r is Reminder => {
     if (r.fireAt !== null && canHoldTime(r.fireAt)) return true;
     log(`dropped reminder ${JSON.stringify(r)}: its stored time is outside the times a reminder can hold, `
@@ -240,11 +234,8 @@ function saveReminders(reminders: Reminder[]): string | null {
   }
 }
 
-// `uses` must name every capability the feature set actually exercises (SPEC
-// §6.2 vocabulary; §6.4 derivation). This set answers tools/call AND delivers
-// every wake as push/event, so it needs both `tools` and `pushEvents` — the
-// declaration previously said only `tools` while pushing. `hostState` was
-// removed from the declaration in 0.4.1 and is gone; `rollback` survives (§8.1).
+// uses names every capability this feature set exercises (SPEC §6.2, §6.4): it answers
+// tools/call and delivers each wake as push/event.
 const featureSetDecl: FeatureSetDeclaration05 = {
   description: 'Periodic self-wake heartbeats, one-shot/recurring reminders, and schedule configuration',
   uses: ['tools', 'pushEvents'],
@@ -326,8 +317,7 @@ class HeartbeatServer {
   /** The effective grant (§5.4). Empty until the host sends one — there is no
    *  server-side default, and nothing this server says can add to it. */
   private grant: Grant = EMPTY_GRANT;
-  /** §5.3/§6.7: only a Request-form featureSets/update establishes ready state.
-   *  Until then every capability-dependent behavior is unavailable. */
+  /** SPEC §5.3, §6.7: only a featureSets/update Request establishes the ready state. */
   private policyReady = false;
   /** The host has sent featureSets/update only as a Notification, with no
    *  Request: a pre-0.5 host, on whose connection no wake is ever delivered
@@ -404,9 +394,7 @@ class HeartbeatServer {
         case 'tools/list': conn.sendResponse(req.id, { tools: toolDefinitions }); break;
         case 'tools/call': conn.sendResponse(req.id, this.handleToolCall(params.name, params.arguments ?? {})); break;
         case method.FEATURE_SETS_UPDATE: this.handleFeatureSetsUpdateRequest(req); break;
-        // §6.6: a method that will never be answered MUST return an error, so
-        // everything else — channels/* included, since no channel capability is
-        // advertised or granted — falls through to -32601.
+        // SPEC §6.6: a method that will never be answered MUST return an error.
         default: conn.sendError(req.id, -32601, `Method not found: ${req.method}`);
       }
     } catch (e) {
@@ -435,16 +423,8 @@ class HeartbeatServer {
 
   // ── Negotiated policy (§5.3, §5.4, §6.7) ──
 
-  /**
-   * `featureSets/update` as a Request: apply the grant, then answer with a
-   * degradation receipt.
-   *
-   * Ordering per §6.7 — the new grant is installed *before* the response goes
-   * out, so a reduction takes effect atomically first and never waits on our
-   * consent. The receipt that follows is testimony about consequences only; it
-   * asks for nothing, and the host is barred from widening anything because of
-   * it.
-   */
+  /** SPEC §6.7: a server MUST immediately respect a reduction, so the grant is installed before
+   *  the receipt goes out. */
   private handleFeatureSetsUpdateRequest(req: ReqMsg): void {
     const conn = this.conn!;
     const parsed = parsePolicy(req.params);
@@ -452,7 +432,7 @@ class HeartbeatServer {
     this.requestSeen = true;
     this.notificationOnly = false;
     if (!parsed.ok) {
-      // §5.4: reject a malformed policy message, and hold no grant meanwhile.
+      // SPEC §5.4: a malformed policy message fails closed.
       this.grant = EMPTY_GRANT;
       this.policyReady = false;
       log(`featureSets/update rejected as malformed: ${parsed.error}; grant cleared`);
@@ -514,15 +494,9 @@ class HeartbeatServer {
 
   /** Why a wake cannot be delivered right now, or null when it can. */
   private pushBlocked(): WakeBlocked | null {
-    // Once the host has gone, nothing may be armed: a reminder that can't be
-    // sent stays due, and arming it would wake the process every millisecond.
-    // A push still out when the host goes away fails, and its answer calls
-    // scheduleReminders; this guard keeps that from arming anything. With
-    // mcpl-core 0.2.1 that answer settles after serve has ended, which
-    // `!this.conn` covers. isClosed covers it settling once the connection has
-    // closed but before serve ends, so nothing is armed or sent into a closed
-    // connection meanwhile. Which comes first depends on the promise steps on
-    // both sides, mcpl-core's among them, so this code alone doesn't fix it.
+    // mcpl-core 0.2.1 rejects a push still out when the connection closes. Whether that answer
+    // settles before or after serve ends rests on promise steps in mcpl-core as well as here, so
+    // both are checked before a push is sent or a reminder's wake armed.
     if (!this.conn || this.conn.isClosed) return HOST_GONE;
     return wakeBlocked(this.mcplEnabled, this.notificationOnly, this.policyReady, () => this.featureSetState(), FS_NAME);
   }
@@ -682,9 +656,7 @@ class HeartbeatServer {
   }
 
   private logPushResult(r: unknown, kind: string): void {
-    // §9.3 result, or §6.6 rejection. Either is diagnostics: it is recorded
-    // so a dropped wake is visible, and it changes no grant here — a
-    // rejection never re-grants or re-negotiates anything (§6.6).
+    // SPEC §6.6: a rejection is diagnostics, not authorization, so it changes no grant.
     const accepted = (r as { accepted?: unknown } | null)?.accepted;
     if (accepted === false) log(`push/event NOT accepted (${kind}):`, JSON.stringify(r));
     else log('push response:', JSON.stringify(r));

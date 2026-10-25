@@ -1,6 +1,4 @@
-// Unit tests for the MCPL 0.5 policy derivation (SPEC §5.3, §5.4, §6.2, §6.4,
-// §6.7). Every assertion here is about failing closed: the interesting cases are
-// the ones where the server must decline to act.
+// MCPL 0.5's policy rules: SPEC §5.3, §5.4, §6.2, §6.4 and §6.7.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -149,7 +147,7 @@ test('a denied capability yields a degraded receipt naming the consequence', () 
   assert.deepEqual(receipt.unavailableFeatures, [
     { featureSet: 'heartbeat', missingCapabilities: ['pushEvents'], effect: 'disabled' },
   ]);
-  // Testimony about what the server will do — no request for more capability.
+  // A receipt's notes are testimony about what the server will do, not a request for capability (SPEC §6.7).
   assert.match(receipt.notes?.join(' ') ?? '', /will not be delivered/);
 });
 

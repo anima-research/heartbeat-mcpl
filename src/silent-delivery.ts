@@ -20,11 +20,8 @@ import type { PushEventParams } from '@animalabs/mcpl-core';
 /** JSON-RPC invalid params: how a host refuses an empty push. */
 export const INVALID_PARAMS = -32602;
 
-/**
- * Did the host refuse a silent push because its content is empty? True for a
- * -32602 error (the marker's empty content is its only invalid param) and for
- * a legacy `{ accepted: false }` result whose reason names empty content.
- */
+/** agent-framework refuses an empty push with JSON-RPC -32602, or, where it can't answer with an
+ *  error, with accepted: false and the reason empty-content. */
 export function isEmptyPushRejection(outcome: { error: unknown } | { result: unknown }): boolean {
   if ('error' in outcome) {
     return (outcome.error as { code?: unknown } | null)?.code === INVALID_PARAMS;
@@ -37,11 +34,8 @@ export type SilentDeliveryOutcome =
   | { delivered: 'silent'; result: unknown }
   | { delivered: 'message'; result: unknown; rejection: string };
 
-/**
- * Send `silent`; if the host refuses it as empty, send `fallback()` instead
- * (a fresh event, so its eventId is never one the host has already seen).
- * Any other failure, and any failure of the fallback, is thrown to the caller.
- */
+/** The fallback is a fresh event with its own eventId, since a host SHOULD deduplicate
+ *  events by eventId (SPEC §9.4). */
 export async function sendSilentWithFallback(
   send: (params: PushEventParams) => Promise<unknown>,
   silent: PushEventParams,

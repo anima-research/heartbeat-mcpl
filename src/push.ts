@@ -30,9 +30,8 @@ export async function sendPush(conn: McplConnection, params: PushEventParams): P
     result = await conn.sendRequest(method.PUSH_EVENT, params, PUSH_ANSWER_TIMEOUT_MS);
   } catch (e) {
     const error = e instanceof Error ? e : new Error(String(e));
-    // An error answer and mcpl-core's own timeout are both RpcErrors. mcpl-core
-    // 0.2 starts their message with the code, "RPC error <code>: ", and the
-    // agent is told the rest; a message without it is passed on whole.
+    // mcpl-core 0.2 starts an RpcError's message with "RPC error <code>: ", for an error
+    // answer and its own timeout alike, and the agent is told the rest.
     const why = error instanceof RpcError ? error.message.replace(`RPC error ${error.code}: `, '') : error.message;
     return { refusal: `the push failed: ${why}`, error };
   }

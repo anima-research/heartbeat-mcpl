@@ -83,7 +83,7 @@ test('a repeated hour whose later offset is zero names it as +00:00', () => {
 });
 
 test('a zero offset that Intl names as bare GMT is labelled +00:00', (t) => {
-  // ICU 78 (Node 20.20, 24.21) names a zero offset GMT+00:00; ICU 72 to 77 (Node 20.0 to 24.0) name it GMT.
+  // ICU 78 names a zero offset GMT+00:00, where ICU 76, which Node 22.12.0 has, names it GMT.
   const formatToParts = Intl.DateTimeFormat.prototype.formatToParts;
   t.mock.method(Intl.DateTimeFormat.prototype, 'formatToParts', function (this: Intl.DateTimeFormat, date?: Date | number) {
     return formatToParts.call(this, date).map((part) => (
@@ -292,9 +292,7 @@ test('the log keeps each reminder a stored time drops or ends, whole, with the r
   const now = Date.now();
   const row = (id: string, fireAt: number | null, everySeconds: number | null) =>
     ({ id, message: `the message of ${id}`, createdAt: now, fireAt, everySeconds });
-  // Past the range, the null JSON wrote for an infinite time, and below the
-  // range: each dropped at load. And a recurring reminder whose next time is
-  // past the last one, which ends once the host takes its push.
+  // JSON writes an infinite time as null.
   const dropped = [row('rem_far', now + 1e16, null), row('rem_null', null, null), row('rem_low', -9e15, 60)];
   const lastAt = now + 1000;
   const last = row('rem_last', lastAt, 1e13);

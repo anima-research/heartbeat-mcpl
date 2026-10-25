@@ -12,9 +12,8 @@ const harness = process.env.MCPL_HARNESS_SESSION
 const { HostSession } = await import(harness.href);
 const server = fileURLToPath(new URL('../dist/src/index.js', import.meta.url));
 
-// The instant of a New York wall time, as this runtime's tzdata places it. A reminder that is
-// saved must be in the future, where clock rules are projections, so these rows compute their
-// instants rather than fix them. Their dates are far from any clock change, so the offset at
+// Future clock rules are tzdata's projections, so these rows compute their instants as
+// this runtime's tzdata places them. Their dates are far from any clock change, so the offset at
 // the wall time read as UTC is the offset that applies.
 const newYork = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', timeZoneName: 'longOffset' });
 function inNewYork(wall) {
@@ -31,8 +30,8 @@ test('reminder_add uses the agent zone, not the process zone, and refuses ambigu
     command: 'node',
     args: [server, '--stdio'],
     env: {
-      // A process zone unlike the agent's, so reading wall times in the
-      // process zone shows on a UTC runner too.
+      // Node takes its process zone from TZ: one unlike the agent's shows a
+      // read in the process zone on a UTC runner too.
       TZ: 'Asia/Tokyo',
       AGENT_TIMEZONE: 'America/New_York',
       HEARTBEAT_CONFIG_FILE: join(dir, 'config.json'),
@@ -123,10 +122,7 @@ test('a stored time a reminder can\'t hold is dropped at load, and a recurring r
   const reminders = join(dir, 'reminders.json');
   const now = Date.now();
   const row = (id, fireAt, everySeconds) => ({ id, message: id, createdAt: now, fireAt, everySeconds });
-  // Times like those reminder_add saved for {inSeconds: 1e13} and, as JSON's
-  // null, {inSeconds: 1e306}; one below the range, from a hand edit; a
-  // recurring reminder whose next time will be past the last one; and an
-  // ordinary one.
+  // JSON writes an infinite time as null.
   writeFileSync(reminders, JSON.stringify([
     row('rem_far', now + 1e16, null),
     row('rem_null', null, null),
