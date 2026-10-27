@@ -588,7 +588,7 @@ class HeartbeatServer {
     let when = this.inFlight.has(rem.id) ? "sent, waiting for the host's answer"
       : rem.fireAt <= now ? 'overdue' : `~${Math.round((rem.fireAt - now) / 1000)}s`;
     const refused = this.refused.get(rem.id);
-    if (refused) when += `; ${refused.reason}, at ${formatAgentDateTime(refused.at, AGENT_TIME_ZONE)}`;
+    if (refused) when += `; at ${formatAgentDateTime(refused.at, AGENT_TIME_ZONE)}, ${refused.reason}`;
     const rec = rem.everySeconds !== null ? `repeats every ${rem.everySeconds}s` : 'one-shot';
     return `due ${formatAgentDateTime(rem.fireAt, AGENT_TIME_ZONE)} (${when}) | ${rec} | "${rem.message}"`;
   }
