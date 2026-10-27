@@ -20,7 +20,7 @@ async function listed(h: Host, pattern: RegExp): Promise<string> {
 }
 
 function refusedAt(list: string, id: string): number {
-  const m = new RegExp(`^${id} \\| .*, at (\\S+) \\[[^\\]]+\\]\\) \\|`, 'm').exec(list);
+  const m = new RegExp(`^${id} \\| .*; at (\\S+) \\[[^\\]]+\\], `, 'm').exec(list);
   assert.ok(m, `no refusal time for ${id}:\n${list}`);
   return Date.parse(m[1]!);
 }
@@ -33,11 +33,11 @@ test('a one-shot whose push fails is held, listed with the reason and when, and 
     ? { error: [-32001, 'Feature set not enabled: heartbeat'] } : {}), { reminders: [seeded] });
   t.after(h.close);
   await h.pushCount(1);
-  const list = await listed(h, /\(overdue; the push failed: /);
+  const list = await listed(h, /\(overdue; at \S+ \[[^\]]+\], the push failed: /);
   const listedAt = Date.now();
   await sleep(500);
   assert.equal(h.pushes.length, 1, 'tried once, not again on every fire');
-  assert.match(list, /^rem_once \| due .* \(overdue; the push failed: Feature set not enabled: heartbeat, at [^)]+\) \| one-shot \| "rem_once"$/m);
+  assert.match(list, /^rem_once \| due .* \(overdue; at \S+ \[[^\]]+\], the push failed: Feature set not enabled: heartbeat\) \| one-shot \| "rem_once"$/m);
   assert.ok(list.endsWith(`\n${refusedLine}`), list);
   await logged(h, 'reminder rem_once: the push failed: Feature set not enabled: heartbeat; '
     + 'holding it until the next policy update, add, cancel or restart');
@@ -62,7 +62,7 @@ test('a recurring reminder whose push the host refuses stays at its due time, an
     ? { result: { accepted: false, reason: 'busy' } } : {}), { reminders: [seeded] });
   t.after(h.close);
   await h.pushCount(1);
-  assert.match(await listed(h, /the host refused it/), /^rem_hourly \| due .* \(overdue; the host refused it: busy, at [^)]+\) \| repeats every 3600s/m);
+  assert.match(await listed(h, /the host refused it/), /^rem_hourly \| due .* \(overdue; at \S+ \[[^\]]+\], the host refused it: busy\) \| repeats every 3600s/m);
   assert.deepEqual(h.stored(), [seeded], 'the file holds it as it was, not advanced');
 
   refuse = false;
@@ -83,7 +83,7 @@ test('a recurring reminder the host refuses is tried again an interval after eac
   }, { reminders: [seeded] });
   t.after(h.close);
   await h.pushCount(1);
-  await listed(h, /^rem_5s \| due .* \(overdue; the host refused it: busy, at [^)]+\) \| repeats every 5s/m);
+  await listed(h, /^rem_5s \| due .* \(overdue; at \S+ \[[^\]]+\], the host refused it: busy\) \| repeats every 5s/m);
   await logged(h, 'reminder rem_5s: the host refused it: busy; '
     + 'holding it until the next policy update, add, cancel or restart, or for its interval, 5s');
   assert.deepEqual(h.stored(), [seeded], 'refused, the file holds it as it was');
@@ -123,7 +123,7 @@ test('a refused reminder is tried once more at a Notification and at a cancel, n
   t.after(h.close);
   const refusedAgain = async (n: number, why: string) => {
     await h.pushCount(n);
-    await listed(h, /^rem_once \| .*\(overdue; the host refused it: busy, at /m);
+    await listed(h, /^rem_once \| .*\(overdue; at \S+ \[[^\]]+\], the host refused it: busy\)/m);
     assert.equal(h.pushes.length, n, why);
   };
   await refusedAgain(1, 'pushed once at the start');
@@ -132,7 +132,7 @@ test('a refused reminder is tried once more at a Notification and at a cancel, n
   await h.call('reminder_cancel', { id: 'rem_other' });
   await refusedAgain(3, 'and at a cancel');
   h.notify('featureSets/update', { ...POLICY, enabled: 'heartbeat' });
-  assert.match(await h.call('reminder_list'), /^rem_once \| .*\(overdue; the host refused it: busy, at /m, 'still refused after a malformed Notification');
+  assert.match(await h.call('reminder_list'), /^rem_once \| .*\(overdue; at \S+ \[[^\]]+\], the host refused it: busy\)/m, 'still refused after a malformed Notification');
   await sleep(300);
   assert.equal(h.pushes.length, 3, 'and not pushed again');
   await assert.rejects(h.request('featureSets/update', { ...POLICY, enabled: 'heartbeat' }));

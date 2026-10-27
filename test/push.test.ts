@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
-import { McplConnection, RpcError } from '@animalabs/mcpl-core';
+import { McplConnection } from '@animalabs/mcpl-core';
 import type { PushEventParams } from '@animalabs/mcpl-core';
 import { sendPush } from '../src/push.js';
 import type { PushOutcome } from '../src/push.js';
@@ -41,11 +41,6 @@ function rejections(conn: McplConnection): Error[] {
   return seen;
 }
 
-/** mcpl-core 0.2 starts an RpcError's message with "RPC error <code>: ". */
-function failedWith(error: Error): string {
-  const why = error instanceof RpcError ? error.message.replace(`RPC error ${error.code}: `, '') : error.message;
-  return `the push failed: ${why}`;
-}
 
 /** setImmediate isn't among the timers these tests mock, so this runs promise callbacks and I/O without moving the clock. */
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -58,6 +53,7 @@ test('each answer is told apart: taken, refused with or without a reason, or an 
     ['refused with a reason', { result: { accepted: false, reason: 'busy' } }, 'the host refused it: busy'],
     ['refused without one', { result: { accepted: false } }, 'the host refused it'],
     ['an error answer', { error: [-32001, 'Feature set not enabled: heartbeat'] }, 'the push failed: Feature set not enabled: heartbeat'],
+    ["an error answer with a timeout's code", { error: [-32000, 'busy'] }, 'the push failed: busy'],
   ];
   for (const [name, answer, refusal] of cases) {
     const c = connected(() => answer);
@@ -84,7 +80,7 @@ test('a push the host never answers fails at 30 s, and not before', async (t) =>
   const [outcome] = outcomes;
   assert.ok(outcome && 'error' in outcome, 'it came back as a failure');
   assert.equal(outcome.error, seen[0]);
-  assert.equal(outcome.refusal, failedWith(seen[0]));
+  assert.equal(outcome.refusal, "the host didn't answer within 30 s, so whether it was delivered is unknown, and a retry may deliver it twice");
 });
 
 test('a push out when the connection closes fails', async (t) => {
@@ -101,5 +97,5 @@ test('a push out when the connection closes fails', async (t) => {
   const [outcome] = outcomes;
   assert.ok('error' in outcome, 'it came back as a failure');
   assert.equal(outcome.error, seen[0]);
-  assert.equal(outcome.refusal, failedWith(seen[0]));
+  assert.equal(outcome.refusal, `the push failed: ${seen[0]!.message}`);
 });

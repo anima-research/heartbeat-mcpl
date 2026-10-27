@@ -1,9 +1,3 @@
-/**
- * @animalabs/mcpl-core 0.2.1 carries MCPL 0.4's shapes: its FeatureSetDeclaration requires the
- * removed hostState and carries a name, its FeatureSetsUpdateParams has no effectiveCapabilities
- * or deniedCapabilities, and it has no receipt type. So this module declares the MCPL types itself.
- */
-
 /** SPEC §6.2's uses vocabulary, which is closed: a declaration whose uses holds anything else
  *  is invalid. */
 export const CAPABILITY_PATHS = [

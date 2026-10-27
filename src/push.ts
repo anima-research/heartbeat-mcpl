@@ -1,4 +1,4 @@
-import { RpcError, method } from '@animalabs/mcpl-core';
+import { ConnectionTimeoutError, method } from '@animalabs/mcpl-core';
 import type { McplConnection, PushEventParams } from '@animalabs/mcpl-core';
 
 export const PUSH_ANSWER_TIMEOUT_MS = 30_000;
@@ -13,10 +13,10 @@ export async function sendPush(conn: McplConnection, params: PushEventParams): P
     result = await conn.sendRequest(method.PUSH_EVENT, params, PUSH_ANSWER_TIMEOUT_MS);
   } catch (e) {
     const error = e instanceof Error ? e : new Error(String(e));
-    // mcpl-core 0.2 starts an RpcError's message with "RPC error <code>: ", for an error
-    // answer and its own timeout alike, and the agent is told the rest.
-    const why = error instanceof RpcError ? error.message.replace(`RPC error ${error.code}: `, '') : error.message;
-    return { refusal: `the push failed: ${why}`, error };
+    const refusal = error instanceof ConnectionTimeoutError
+      ? `the host didn't answer within ${PUSH_ANSWER_TIMEOUT_MS / 1000} s, so whether it was delivered is unknown, and a retry may deliver it twice`
+      : `the push failed: ${error.message}`;
+    return { refusal, error };
   }
   const answer = result as { accepted?: unknown; reason?: unknown } | null;
   if (answer?.accepted !== false) return { refusal: null, result };
