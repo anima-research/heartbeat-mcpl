@@ -248,6 +248,7 @@ class HeartbeatServer {
 
   async serve(conn: McplConnection): Promise<void> {
     this.conn = conn;
+    conn.on('error', (e: Error) => log('connection error:', e.message));
     await this.handleInitialize();
     this.reschedule();
     this.scheduleReminders();

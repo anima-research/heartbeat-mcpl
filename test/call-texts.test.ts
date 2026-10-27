@@ -93,8 +93,7 @@ test('through the server, a tool that throws is answered with that text, after i
       .then(() => undefined, (e: unknown) => e);
     assert.ok(error instanceof RpcError, `expected a JSON-RPC error for ${atIso}, got ${String(error)}`);
     assert.equal(error.code, -32000);
-    // mcpl-core 0.2 starts the message with "RPC error <code>: ".
-    assert.equal(error.message.replace(`RPC error ${error.code}: `, ''), `reminder_add failed inside heartbeat-mcpl: ${why}. ${after}`);
+    assert.equal(error.message, `reminder_add failed inside heartbeat-mcpl: ${why}. ${after}`);
     await logged(h, `reminder_add threw: ${inLog}`);
   }
   const lines = h.stderr().split('\n');
