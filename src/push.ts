@@ -14,7 +14,7 @@ export async function sendPush(conn: McplConnection, params: PushEventParams): P
   } catch (e) {
     const error = e instanceof Error ? e : new Error(String(e));
     const refusal = error instanceof ConnectionTimeoutError
-      ? `the host didn't answer within ${PUSH_ANSWER_TIMEOUT_MS / 1000} s, so whether it was delivered is unknown`
+      ? `the host didn't answer within ${PUSH_ANSWER_TIMEOUT_MS / 1000} s, so whether it was delivered is unknown, and a retry may deliver it twice`
       : `the push failed: ${error.message}`;
     return { refusal, error };
   }

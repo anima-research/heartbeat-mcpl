@@ -365,7 +365,7 @@ class HeartbeatServer {
   }
 
   private pushBlocked(): WakeBlocked | null {
-    // mcpl-core 0.2.1 rejects a push still out when the connection closes. Whether that answer
+    // mcpl-core rejects a push still out when the connection closes. Whether that answer
     // settles before or after serve ends rests on promise steps in mcpl-core as well as here, so
     // both are checked before a push is sent or a reminder's wake armed.
     if (!this.conn || this.conn.isClosed) return HOST_GONE;

@@ -53,6 +53,7 @@ test('each answer is told apart: taken, refused with or without a reason, or an 
     ['refused with a reason', { result: { accepted: false, reason: 'busy' } }, 'the host refused it: busy'],
     ['refused without one', { result: { accepted: false } }, 'the host refused it'],
     ['an error answer', { error: [-32001, 'Feature set not enabled: heartbeat'] }, 'the push failed: Feature set not enabled: heartbeat'],
+    ["an error answer with a timeout's code", { error: [-32000, 'busy'] }, 'the push failed: busy'],
   ];
   for (const [name, answer, refusal] of cases) {
     const c = connected(() => answer);
@@ -79,7 +80,7 @@ test('a push the host never answers fails at 30 s, and not before', async (t) =>
   const [outcome] = outcomes;
   assert.ok(outcome && 'error' in outcome, 'it came back as a failure');
   assert.equal(outcome.error, seen[0]);
-  assert.equal(outcome.refusal, "the host didn't answer within 30 s, so whether it was delivered is unknown");
+  assert.equal(outcome.refusal, "the host didn't answer within 30 s, so whether it was delivered is unknown, and a retry may deliver it twice");
 });
 
 test('a push out when the connection closes fails', async (t) => {
