@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { RpcError } from '@animalabs/mcpl-core';
 import type { PushEventParams } from '@animalabs/mcpl-core';
 import { INVALID_PARAMS, isEmptyPushRejection, sendSilentWithFallback } from '../src/silent-delivery.js';
-import { origin, serverWithHost } from './scripted-host.js';
+import { origin } from './scripted-host.js';
+import { serverInProcess, useClock } from './in-process-host.js';
 
 const params = (eventId: string, content: PushEventParams['payload']['content']): PushEventParams => ({
   featureSet: 'heartbeat', eventId, timestamp: '2026-10-06T00:00:00Z',
@@ -69,9 +70,9 @@ test('any other failure is not papered over with a fallback', async () => {
 });
 
 test('end to end: a host refusing the empty push gets the tick in message mode, explained once', async (t) => {
-  const h = await serverWithHost((p) => (p.payload.content.length === 0
+  useClock(t);
+  const h = await serverInProcess(t, (p) => (p.payload.content.length === 0
     ? { error: [INVALID_PARAMS, 'content has no visible content'] } : {}));
-  t.after(h.close);
   await h.call('heartbeat_configure', { deliveryMode: 'silent', message: 'CHECK-IN' });
 
   await h.call('heartbeat_trigger');
@@ -87,7 +88,7 @@ test('end to end: a host refusing the empty push gets the tick in message mode, 
 
   await h.call('heartbeat_trigger');
   await h.pushCount(4);
-  await h.settle();
+  await h.advance(200);
   assert.equal(h.pushes[2]!.payload.content.length, 0, 'every tick tries silent first');
   assert.equal(h.pushes[3]!.payload.content.length, 1);
   assert.equal(h.stderr().match(/WARNING: the host refused the silent heartbeat/g)?.length, 1, 'explained once per process');
@@ -95,14 +96,33 @@ test('end to end: a host refusing the empty push gets the tick in message mode, 
 });
 
 test('end to end: a host that accepts the silent marker gets no fallback', async (t) => {
-  const h = await serverWithHost(() => ({}));
-  t.after(h.close);
+  useClock(t);
+  const h = await serverInProcess(t, () => ({}));
   await h.call('heartbeat_configure', { deliveryMode: 'silent' });
   await h.call('heartbeat_trigger');
   await h.pushCount(1);
-  await h.settle();
+  await h.advance(200);
   assert.equal(h.pushes.length, 1);
   assert.deepEqual(h.pushes[0]!.payload.content, []);
   assert.doesNotMatch(h.stderr(), /WARNING: the host refused/);
   assert.match(await h.call('heartbeat_status'), /mode=silent \|/);
+});
+
+test('in silent mode a trigger is an empty push carrying the server-authored silent marker, and reminders still carry their message', async (t) => {
+  useClock(t);
+  const h = await serverInProcess(t, () => ({}));
+  await h.call('heartbeat_configure', { deliveryMode: 'silent', paused: false });
+  assert.ok((await h.call('heartbeat_status')).includes('mode=silent'), 'status reports silent mode');
+  await h.call('heartbeat_trigger');
+  await h.until(() => h.pushes.some((p) => origin(p).source === 'heartbeat'), () => 'no heartbeat push');
+  const hb = h.pushes.find((p) => origin(p).source === 'heartbeat')!;
+  assert.equal(origin(hb).silent, true, 'silent marker is server-authored');
+  assert.ok(Array.isArray(hb.payload?.content) && hb.payload.content.length === 0, 'silent push has no message content');
+
+  await h.call('reminder_add', { message: 'REMINDER-TEXT', inSeconds: 5 });
+  await h.advance(5000);
+  await h.until(() => h.pushes.some((p) => origin(p).source === 'reminder'), () => 'reminder never fired in silent mode');
+  const rem = h.pushes.find((p) => origin(p).source === 'reminder')!;
+  const remText = (rem.payload?.content?.[0] as { text?: string } | undefined)?.text ?? '';
+  assert.ok(remText.startsWith('[reminder ') && remText.endsWith('] REMINDER-TEXT'), 'reminders remain message-bearing');
 });

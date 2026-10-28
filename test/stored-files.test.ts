@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { chmodSync, readdirSync, readFileSync, rmSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
-import { serverWithHost } from './scripted-host.js';
+import { EPOCH, serverInProcess, until, useClock } from './in-process-host.js';
 
 const copies = (dir: string, name: string) => readdirSync(dir).filter((f) => f.startsWith(`${name}.unreadable-`));
 const unsaved = (what: string, why: 'unread' | 'uncopied') => `This change can't be saved: this server couldn't `
@@ -20,27 +20,23 @@ const configNotLoaded = "The config file couldn't be used at start, so the sched
 const replacedText = (what: string) => `Some text in the ${what} file couldn't be read, so it was loaded with replacement characters `
   + '(\ufffd) in its place. The original is kept; ask whoever runs this host if you need it.';
 const asRoot = process.getuid?.() === 0 ? 'root reads and writes a file whatever its mode' : false;
-const row = { id: 'rem_ok', message: 'ok', createdAt: Date.now(), fireAt: Date.now() + 3_600_000, everySeconds: null };
+const row = { id: 'rem_ok', message: 'ok', createdAt: EPOCH, fireAt: EPOCH + 3_600_000, everySeconds: null };
 
-/** The log comes down its own pipe, so it can arrive after the reply that followed it. */
 async function inLog(h: { stderr: () => string }, pattern: RegExp) {
-  for (const deadline = Date.now() + 5_000; !pattern.test(h.stderr());) {
-    assert.ok(Date.now() < deadline, `expected the log to match ${pattern}, in\n${h.stderr()}`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  await until(() => pattern.test(h.stderr()), () => `expected the log to match ${pattern}, in\n${h.stderr()}`);
 }
 
 test('files the server can use load with no note, and no copy', async (t) => {
-  const h = await serverWithHost(() => ({}), { reminders: [row], prepare: ({ config }) => writeFileSync(config, '{"paused":true}') });
-  t.after(h.close);
+  useClock(t);
+  const h = await serverInProcess(t, () => ({}), { reminders: [row], prepare: ({ config }) => writeFileSync(config, '{"paused":true}') });
   assert.match(await h.call('heartbeat_status'), /^Heartbeat PAUSED \| [^\n]* \| message="[^"\n]*"$/);
   assert.match(await h.call('reminder_list'), /^1 reminder\(s\):\nrem_ok \|[^\n]*$/);
   assert.deepEqual(readdirSync(h.files.dir).sort(), ['config.json', 'reminders.json']);
 });
 
 test('the tools that change a store say the reply tells when a change can\'t be or wasn\'t saved', async (t) => {
-  const h = await serverWithHost(() => ({}));
-  t.after(h.close);
+  useClock(t);
+  const h = await serverInProcess(t, () => ({}));
   const { tools } = await h.request('tools/list', {}) as { tools: Array<{ name: string; description: string }> };
   const description = (name: string) => tools.find((tool) => tool.name === name)?.description ?? '';
   assert.match(description('heartbeat_configure'),
@@ -49,8 +45,8 @@ test('the tools that change a store say the reply tells when a change can\'t be 
 });
 
 test('a reminders file that isn\'t JSON is copied aside, the replies say so, and the next save writes a good one', async (t) => {
-  const h = await serverWithHost(() => ({}), { prepare: ({ reminders }) => writeFileSync(reminders, '[{"id": "rem_torn", "mess') });
-  t.after(h.close);
+  useClock(t);
+  const h = await serverInProcess(t, () => ({}), { prepare: ({ reminders }) => writeFileSync(reminders, '[{"id": "rem_torn", "mess') });
   assert.equal(await h.call('reminder_list'), `No reminders held here.\n${noneLoaded}`);
   const status = await h.call('heartbeat_status');
   assert.ok(status.includes(' | reminders=0 | ') && status.endsWith(`"\n${noneLoaded}`), status);
@@ -63,8 +59,8 @@ test('a reminders file that isn\'t JSON is copied aside, the replies say so, and
 });
 
 test('a reminders file that can\'t be read is left alone, and replies say a change won\'t last', async (t) => {
-  const h = await serverWithHost(() => ({}), { prepare: ({ reminders }) => { rmSync(reminders); mkdirSync(reminders); } });
-  t.after(h.close);
+  useClock(t);
+  const h = await serverInProcess(t, () => ({}), { prepare: ({ reminders }) => { rmSync(reminders); mkdirSync(reminders); } });
   const added = await h.call('reminder_add', { message: 'later', inHours: 1 });
   assert.ok(added.endsWith(`| one-shot | "later". ${unsaved('reminders', 'unread')}`), added);
   const id = /^Reminder (rem_\S+) set/.exec(added)?.[1];
@@ -80,10 +76,10 @@ test('a reminders file that can\'t be read is left alone, and replies say a chan
 });
 
 test('a reminders file the server can\'t read, though it could write it, keeps what it holds', { skip: asRoot }, async (t) => {
-  const h = await serverWithHost(() => ({}), {
+  useClock(t);
+  const h = await serverInProcess(t, () => ({}), {
     prepare: ({ reminders }) => { writeFileSync(reminders, JSON.stringify([row])); chmodSync(reminders, 0o200); },
   });
-  t.after(() => { chmodSync(h.files.reminders, 0o600); h.close(); });
   assert.ok((await h.call('reminder_add', { message: 'later', inHours: 1 })).endsWith(` ${unsaved('reminders', 'unread')}`));
   chmodSync(h.files.reminders, 0o600);
   assert.deepEqual(h.stored(), [row], 'nothing was saved over it');
@@ -91,7 +87,8 @@ test('a reminders file the server can\'t read, though it could write it, keeps w
 });
 
 test('a save that fails on a file the server read is said in the reply, and a later save that goes through keeps the change', { skip: asRoot }, async (t) => {
-  const h = await serverWithHost(() => ({}), {
+  useClock(t);
+  const h = await serverInProcess(t, () => ({}), {
     reminders: [row],
     prepare: ({ reminders, config }) => {
       chmodSync(reminders, 0o444);
@@ -99,7 +96,6 @@ test('a save that fails on a file the server read is said in the reply, and a la
       chmodSync(config, 0o444);
     },
   });
-  t.after(h.close);
   const added = await h.call('reminder_add', { message: 'later', inHours: 1 });
   assert.ok(added.endsWith(`| one-shot | "later". ${failed('reminders')}`), added);
   await inLog(h, /reminders write failed: EACCES/);
@@ -117,10 +113,10 @@ test('a save that fails on a file the server read is said in the reply, and a la
 });
 
 test('a config that is JSON but not an object is copied aside, the defaults load, and each reply showing the schedule says so', async (t) => {
+  useClock(t);
   for (const text of ['"quiet"', '[1]']) {
-    const h = await serverWithHost(() => ({}), { prepare: ({ config }) => writeFileSync(config, text) });
-    t.after(h.close);
-    const status = await h.call('heartbeat_status');
+    const h = await serverInProcess(t, () => ({}), { prepare: ({ config }) => writeFileSync(config, text) });
+      const status = await h.call('heartbeat_status');
     assert.match(status, /^Heartbeat ACTIVE \| mode=message \| interval=14400s /, text);
     assert.ok(status.endsWith(`"\n${configNotLoaded}`), status);
     assert.ok((await h.call('heartbeat_trigger')).endsWith(`"\n${configNotLoaded}`));
@@ -134,8 +130,8 @@ test('a config that is JSON but not an object is copied aside, the defaults load
 });
 
 test('a config that can\'t be read is left alone, and heartbeat_configure says its change won\'t last', async (t) => {
-  const h = await serverWithHost(() => ({}), { prepare: ({ config }) => mkdirSync(config) });
-  t.after(h.close);
+  useClock(t);
+  const h = await serverInProcess(t, () => ({}), { prepare: ({ config }) => mkdirSync(config) });
   const updated = await h.call('heartbeat_configure', { paused: true });
   assert.ok(updated.startsWith(`Updated. ${unsaved('config', 'unread')} Heartbeat PAUSED | `), updated);
   const status = await h.call('heartbeat_status');
@@ -147,19 +143,19 @@ test('a config that can\'t be read is left alone, and heartbeat_configure says i
 });
 
 test('a config the server can\'t read, though it could write it, keeps what it holds', { skip: asRoot }, async (t) => {
+  useClock(t);
   const held = { intervalSeconds: 3600, paused: false, message: 'my own heartbeat', deliveryMode: 'message' };
-  const h = await serverWithHost(() => ({}), {
+  const h = await serverInProcess(t, () => ({}), {
     prepare: ({ config }) => { writeFileSync(config, JSON.stringify(held)); chmodSync(config, 0o200); },
   });
-  t.after(() => { chmodSync(h.files.config, 0o600); h.close(); });
   assert.ok((await h.call('heartbeat_configure', { paused: true })).startsWith(`Updated. ${unsaved('config', 'unread')} Heartbeat PAUSED | `));
   chmodSync(h.files.config, 0o600);
   assert.deepEqual(JSON.parse(readFileSync(h.files.config, 'utf8')), held, 'nothing was saved over it');
 });
 
 test('a reminders file that is JSON but not a list is copied aside too, and the next save writes a good one', async (t) => {
-  const h = await serverWithHost(() => ({}), { prepare: ({ reminders }) => writeFileSync(reminders, '{"rem_1": "later"}') });
-  t.after(h.close);
+  useClock(t);
+  const h = await serverInProcess(t, () => ({}), { prepare: ({ reminders }) => writeFileSync(reminders, '{"rem_1": "later"}') });
   assert.equal(await h.call('reminder_list'), `No reminders held here.\n${noneLoaded}`);
   assert.equal(copies(h.files.dir, 'reminders.json').length, 1);
   await h.call('reminder_add', { message: 'later', inHours: 1 });
@@ -167,8 +163,8 @@ test('a reminders file that is JSON but not a list is copied aside too, and the 
 });
 
 test('a reminders file that starts with a byte order mark loads as it is, and the next save leaves the mark out', async (t) => {
-  const h = await serverWithHost(() => ({}), { prepare: ({ reminders }) => writeFileSync(reminders, `\ufeff${JSON.stringify([row])}`) });
-  t.after(h.close);
+  useClock(t);
+  const h = await serverInProcess(t, () => ({}), { prepare: ({ reminders }) => writeFileSync(reminders, `\ufeff${JSON.stringify([row])}`) });
   assert.match(await h.call('reminder_list'), /^1 reminder\(s\):\nrem_ok \|[^\n]*$/);
   assert.deepEqual(copies(h.files.dir, 'reminders.json'), []);
   await h.call('reminder_add', { message: 'later', inHours: 1 });
@@ -177,10 +173,10 @@ test('a reminders file that starts with a byte order mark loads as it is, and th
 });
 
 test('a reminders file with bytes that aren\'t UTF-8 is copied aside, and its reminders load with replacement characters', async (t) => {
+  useClock(t);
   // 0xe9 is é in Latin-1, and no character in UTF-8.
   const bytes = Buffer.from(JSON.stringify([{ ...row, message: 'caf\u00e9' }]), 'latin1');
-  const h = await serverWithHost(() => ({}), { prepare: ({ reminders }) => writeFileSync(reminders, bytes) });
-  t.after(h.close);
+  const h = await serverInProcess(t, () => ({}), { prepare: ({ reminders }) => writeFileSync(reminders, bytes) });
   const list = await h.call('reminder_list');
   assert.match(list, /^1 reminder\(s\):\nrem_ok \|[^\n]*"caf\ufffd"\n/);
   assert.ok(list.endsWith(`\n${replacedText('reminders')}`), list);
@@ -199,9 +195,9 @@ test('a reminders file with bytes that aren\'t UTF-8 is copied aside, and its re
 });
 
 test('a config with bytes that aren\'t UTF-8 is copied aside, and loads with replacement characters', async (t) => {
+  useClock(t);
   const bytes = Buffer.from(JSON.stringify({ intervalSeconds: 3600, paused: false, message: 'caf\u00e9', deliveryMode: 'message' }), 'latin1');
-  const h = await serverWithHost(() => ({}), { prepare: ({ config }) => writeFileSync(config, bytes) });
-  t.after(h.close);
+  const h = await serverInProcess(t, () => ({}), { prepare: ({ config }) => writeFileSync(config, bytes) });
   const status = await h.call('heartbeat_status');
   assert.match(status, /^Heartbeat ACTIVE \| mode=message \| interval=3600s .*\| message="caf\ufffd"\n/);
   assert.ok(status.endsWith(`"\n${replacedText('config')}`), status);
@@ -212,9 +208,9 @@ test('a config with bytes that aren\'t UTF-8 is copied aside, and loads with rep
 });
 
 test('a reminders file with bytes that aren\'t UTF-8 and a row that isn\'t a reminder says both, with one copy', async (t) => {
+  useClock(t);
   const bytes = Buffer.from(JSON.stringify([{ ...row, message: 'caf\u00e9' }, { message: 'no id' }]), 'latin1');
-  const h = await serverWithHost(() => ({}), { prepare: ({ reminders }) => writeFileSync(reminders, bytes) });
-  t.after(h.close);
+  const h = await serverInProcess(t, () => ({}), { prepare: ({ reminders }) => writeFileSync(reminders, bytes) });
   const list = await h.call('reminder_list');
   assert.match(list, /^1 reminder\(s\):\nrem_ok \|/);
   assert.ok(list.endsWith(`\n${someLoaded} ${replacedText('reminders')}`), list);
@@ -224,10 +220,11 @@ test('a reminders file with bytes that aren\'t UTF-8 and a row that isn\'t a rem
 });
 
 test('files with bytes that aren\'t UTF-8, whose copies can\'t be made, load, and nothing is saved over them', async (t) => {
+  useClock(t);
   const reminders = Buffer.from(JSON.stringify([{ ...row, message: 'caf\u00e9' }]), 'latin1');
   const config = Buffer.from(JSON.stringify({ intervalSeconds: 3600, message: 'caf\u00e9' }), 'latin1');
   const copyOf = (path: string, bytes: Buffer) => `${path}.unreadable-${createHash('sha256').update(bytes).digest('hex').slice(0, 12)}`;
-  const h = await serverWithHost(() => ({}), {
+  const h = await serverInProcess(t, () => ({}), {
     prepare: (files) => {
       writeFileSync(files.reminders, reminders);
       mkdirSync(copyOf(files.reminders, reminders));
@@ -235,7 +232,6 @@ test('files with bytes that aren\'t UTF-8, whose copies can\'t be made, load, an
       mkdirSync(copyOf(files.config, config));
     },
   });
-  t.after(h.close);
   const list = await h.call('reminder_list');
   assert.match(list, /^1 reminder\(s\):\nrem_ok \|[^\n]*"caf\ufffd"\n/);
   assert.ok(list.endsWith(`\n${replacedText('reminders')}`), list);
@@ -249,8 +245,9 @@ test('files with bytes that aren\'t UTF-8, whose copies can\'t be made, load, an
 });
 
 test('a file that can\'t be copied aside is left alone, as one that can\'t be read is', async (t) => {
+  useClock(t);
   const copyPath = (path: string, text: string) => `${path}.unreadable-${createHash('sha256').update(text).digest('hex').slice(0, 12)}`;
-  const h = await serverWithHost(() => ({}), {
+  const h = await serverInProcess(t, () => ({}), {
     prepare: ({ reminders, config }) => {
       writeFileSync(reminders, 'not json');
       mkdirSync(copyPath(reminders, 'not json'));
@@ -258,7 +255,6 @@ test('a file that can\'t be copied aside is left alone, as one that can\'t be re
       mkdirSync(copyPath(config, 'not json either'));
     },
   });
-  t.after(h.close);
   assert.ok((await h.call('reminder_add', { message: 'later', inHours: 1 })).endsWith(` ${unsaved('reminders', 'uncopied')}`));
   assert.ok((await h.call('heartbeat_configure', { paused: true })).startsWith(`Updated. ${unsaved('config', 'uncopied')} Heartbeat PAUSED | `));
   assert.ok((await h.call('reminder_list')).endsWith(`\n${noneLoaded}`));
@@ -269,8 +265,8 @@ test('a file that can\'t be copied aside is left alone, as one that can\'t be re
 });
 
 test('a reminders file with a row that isn\'t a reminder is copied aside, and the store starts with the rest', async (t) => {
-  const h = await serverWithHost(() => ({}), { reminders: [row, { message: 'no id' }] });
-  t.after(h.close);
+  useClock(t);
+  const h = await serverInProcess(t, () => ({}), { reminders: [row, { message: 'no id' }] });
   const held = readFileSync(h.files.reminders);
   const list = await h.call('reminder_list');
   assert.match(list, /^1 reminder\(s\):\nrem_ok \|/);
@@ -284,18 +280,17 @@ test('a reminders file with a row that isn\'t a reminder is copied aside, and th
   await h.call('reminder_add', { message: 'later', inHours: 1 });
   assert.deepEqual(h.stored().map((r) => r.id).filter((id) => id === 'rem_ok'), ['rem_ok'], 'the save keeps the rest');
   const saved = readFileSync(h.files.reminders, 'utf8');
-  const again = await serverWithHost(() => ({}), { prepare: ({ reminders }) => writeFileSync(reminders, saved) });
-  t.after(again.close);
+  const again = await serverInProcess(t, () => ({}), { prepare: ({ reminders }) => writeFileSync(reminders, saved) });
   assert.doesNotMatch(await again.call('reminder_list'), /couldn't be (used|loaded)/);
   assert.deepEqual(copies(again.files.dir, 'reminders.json'), []);
 });
 
 test('a reminders file with a row whose time can\'t be held is copied aside the same way', async (t) => {
+  useClock(t);
   // Past a Date's range, and the null JSON writes for a time too large for a number.
   const far = { ...row, id: 'rem_far', fireAt: Date.now() + 1e16 };
   const never = { ...row, id: 'rem_never', fireAt: null };
-  const h = await serverWithHost(() => ({}), { reminders: [row, far, never] });
-  t.after(h.close);
+  const h = await serverInProcess(t, () => ({}), { reminders: [row, far, never] });
   const held = readFileSync(h.files.reminders);
   const list = await h.call('reminder_list');
   assert.match(list, /^1 reminder\(s\):\nrem_ok \|/);
@@ -306,13 +301,13 @@ test('a reminders file with a row whose time can\'t be held is copied aside the 
 });
 
 test('a reminders file with a row that isn\'t a reminder, whose copy can\'t be made, is left alone', async (t) => {
+  useClock(t);
   const rows = [row, { message: 'no id' }];
   const text = JSON.stringify(rows);
-  const h = await serverWithHost(() => ({}), {
+  const h = await serverInProcess(t, () => ({}), {
     prepare: ({ reminders }) => mkdirSync(`${reminders}.unreadable-${createHash('sha256').update(text).digest('hex').slice(0, 12)}`),
     reminders: rows,
   });
-  t.after(h.close);
   const list = await h.call('reminder_list');
   assert.match(list, /^1 reminder\(s\):\nrem_ok \|/);
   assert.ok(list.endsWith(`\n${someLoaded}`), list);
@@ -322,8 +317,8 @@ test('a reminders file with a row that isn\'t a reminder, whose copy can\'t be m
 });
 
 test('a reminders file none of whose rows is a reminder is copied aside, and the list says none was loaded', async (t) => {
-  const h = await serverWithHost(() => ({}), { reminders: [{ message: 'no id' }, { title: 'another format' }] });
-  t.after(h.close);
+  useClock(t);
+  const h = await serverInProcess(t, () => ({}), { reminders: [{ message: 'no id' }, { title: 'another format' }] });
   assert.equal(await h.call('reminder_list'), `No reminders held here.\n${noneLoaded}`);
   assert.equal(copies(h.files.dir, 'reminders.json').length, 1);
 });

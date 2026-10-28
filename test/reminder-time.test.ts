@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FIRST_REMINDER_TIME, LAST_REMINDER_TIME, canHoldTime, parseReminderTime } from '../src/reminder-time.js';
-import { serverWithHost } from './scripted-host.js';
+import { origin } from './scripted-host.js';
+import { serverInProcess, until, useClock } from './in-process-host.js';
 
 for (const [label, time, zone, expected] of [
   ['winter', '2024-01-15T09:00:00', 'America/New_York', '2024-01-15T14:00:00Z'],
@@ -279,7 +280,8 @@ test('a reminder can hold exactly the times a Date can, both ends included, and 
   assert.equal(Date.parse(LAST_REMINDER_TIME), 8.64e15);
 });
 
-test('the log keeps each reminder a stored time drops or ends, whole, with the range', async () => {
+test('the log keeps each reminder a stored time drops or ends, whole, with the range', async (t) => {
+  useClock(t);
   const now = Date.now();
   const row = (id: string, fireAt: number | null, everySeconds: number | null) =>
     ({ id, message: `the message of ${id}`, createdAt: now, fireAt, everySeconds });
@@ -287,40 +289,63 @@ test('the log keeps each reminder a stored time drops or ends, whole, with the r
   const dropped = [row('rem_far', now + 1e16, null), row('rem_null', null, null), row('rem_low', -9e15, 60)];
   const lastAt = now + 1000;
   const last = row('rem_last', lastAt, 1e13);
-  const h = await serverWithHost(() => ({}), { reminders: [...dropped, last] });
-  try {
-    await h.pushCount(1);
-    const ended = `[heartbeat-mcpl] ended recurring reminder ${JSON.stringify(last)}: its next time, ${lastAt + 1e13 * 1000}, `
-      + `is past ${LAST_REMINDER_TIME}, the last time a reminder can hold`;
-    for (const deadline = Date.now() + 5_000; !h.stderr().split('\n').includes(ended) && Date.now() < deadline;) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    const lines = h.stderr().split('\n');
-    for (const r of dropped) {
-      const line = `[heartbeat-mcpl] dropped reminder ${JSON.stringify(r)}: its stored time is outside the times a reminder can hold, `
-        + `${FIRST_REMINDER_TIME} to ${LAST_REMINDER_TIME}`;
-      assert.ok(lines.includes(line), `expected the log line\n${line}\nin\n${h.stderr()}`);
-    }
-    assert.ok(lines.includes(ended), `expected the log line\n${ended}\nin\n${h.stderr()}`);
-  } finally {
-    h.close();
+  const h = await serverInProcess(t, () => ({}), { reminders: [...dropped, last] });
+  await h.advance(1_000);
+  await h.pushCount(1);
+  const ended = `[heartbeat-mcpl] ended recurring reminder ${JSON.stringify(last)}: its next time, ${lastAt + 1e13 * 1000}, `
+    + `is past ${LAST_REMINDER_TIME}, the last time a reminder can hold`;
+  await until(() => h.stderr().split('\n').includes(ended), () => `expected the log line\n${ended}\nin\n${h.stderr()}`);
+  const lines = h.stderr().split('\n');
+  for (const r of dropped) {
+    const line = `[heartbeat-mcpl] dropped reminder ${JSON.stringify(r)}: its stored time is outside the times a reminder can hold, `
+      + `${FIRST_REMINDER_TIME} to ${LAST_REMINDER_TIME}`;
+    assert.ok(lines.includes(line), `expected the log line\n${line}\nin\n${h.stderr()}`);
   }
+  assert.ok(lines.includes(ended), `expected the log line\n${ended}\nin\n${h.stderr()}`);
 });
 
-test('a stored row dropped for its time stays in the file until the next save, which leaves it out', async () => {
+test('a stored row dropped for its time stays in the file until the next save, which leaves it out', async (t) => {
+  useClock(t);
   const now = Date.now();
   const row = (id: string, fireAt: number | null) =>
     ({ id, message: `the message of ${id}`, createdAt: now, fireAt, everySeconds: null });
   const rows = [row('rem_far', now + 1e16), row('rem_null', null), row('rem_ok', now + 3_600_000)];
-  const h = await serverWithHost(() => ({}), { reminders: rows });
-  try {
-    assert.doesNotMatch(await h.call('reminder_list'), /rem_far|rem_null/);
-    assert.deepEqual(h.stored(), rows, 'loading writes nothing');
-    await h.call('reminder_add', { message: 'later', inHours: 2 });
-    const ids = h.stored().map((r) => r.id);
-    assert.equal(ids.length, 2, `the save leaves the dropped rows out: ${JSON.stringify(ids)}`);
-    assert.ok(ids.includes('rem_ok'));
-  } finally {
-    h.close();
-  }
+  const h = await serverInProcess(t, () => ({}), { reminders: rows });
+  assert.doesNotMatch(await h.call('reminder_list'), /rem_far|rem_null/);
+  assert.deepEqual(h.stored(), rows, 'loading writes nothing');
+  await h.call('reminder_add', { message: 'later', inHours: 2 });
+  const ids = h.stored().map((r) => r.id);
+  assert.equal(ids.length, 2, `the save leaves the dropped rows out: ${JSON.stringify(ids)}`);
+  assert.ok(ids.includes('rem_ok'));
+});
+
+test('a stored time a reminder can\'t hold is dropped at load, and a recurring reminder ends before its next time passes it', async (t) => {
+  useClock(t);
+  const now = Date.now();
+  const row = (id: string, fireAt: number | null, everySeconds: number | null) => ({ id, message: id, createdAt: now, fireAt, everySeconds });
+  const fired: string[] = [];
+  const h = await serverInProcess(t, (p) => {
+    if (origin(p).source === 'reminder') fired.push(origin(p).reminderId as string);
+    return {};
+  }, {
+    reminders: [
+      row('rem_far', now + 1e16, null),
+      row('rem_null', null, null),
+      row('rem_low', -9e15, 60),
+      row('rem_last', now + 3000, 1e13),
+      row('rem_ok', now + 3_600_000, null),
+    ],
+  });
+  const listed = async () => {
+    const result = await h.request('tools/call', { name: 'reminder_list', arguments: {} }) as { isError?: boolean; content: Array<{ text: string }> };
+    assert.notEqual(result.isError, true, result.content[0]!.text);
+    return [...result.content[0]!.text.matchAll(/^(rem_\w+) \|/gm)].map((m) => m[1]);
+  };
+  assert.deepEqual((await listed()).filter((id) => id !== 'rem_last'), ['rem_ok'], 'only the times a reminder can hold load');
+  await h.advance(3000);
+  await h.until(() => fired.includes('rem_last'), () => 'rem_last never fired');
+  for (let i = 0; i < 50 && (await listed()).includes('rem_last'); i++) await h.advance(0);
+  assert.deepEqual(fired, ['rem_last'], 'the recurring reminder fires its last time');
+  assert.deepEqual(await listed(), ['rem_ok']);
+  assert.deepEqual(h.stored().map((r) => r.id), ['rem_ok']);
 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { serverWithHost } from './scripted-host.js';
+import { CEILING_MS, serverWithHost } from './scripted-host.js';
 
 type Host = Awaited<ReturnType<typeof serverWithHost>>;
 
@@ -8,7 +8,7 @@ const SEPARATED = 'before\u2028middle\u2029after';
 const RAW_SEPARATOR = /[\u2028\u2029]/;
 
 async function inStderr(h: Host, text: string): Promise<void> {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + CEILING_MS;
   while (!h.stderr().includes(text)) {
     assert.ok(Date.now() < deadline, `expected ${JSON.stringify(text)} in\n${h.stderr()}`);
     await new Promise((r) => setTimeout(r, 50));
@@ -16,7 +16,7 @@ async function inStderr(h: Host, text: string): Promise<void> {
 }
 
 async function rawAnswer(h: Host, id: string): Promise<Record<string, unknown>> {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + CEILING_MS;
   for (;;) {
     for (const line of h.rawOut().split('\n')) {
       let msg: Record<string, unknown>;
@@ -61,7 +61,7 @@ test("a line that isn't JSON is logged, and the next request is answered", async
   assert.match(await h.call('heartbeat_status'), /^Heartbeat ACTIVE \| /);
 });
 
-test('a broken output pipe ends the server, exit 0, without an unhandled error', { timeout: 15_000 }, async (t) => {
+test('a broken output pipe ends the server, exit 0, without an unhandled error', { timeout: 2 * CEILING_MS }, async (t) => {
   const h = await serverWithHost(() => ({}));
   t.after(h.close);
   h.child.stdout.destroy();
