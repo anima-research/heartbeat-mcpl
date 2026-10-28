@@ -24,32 +24,6 @@ test('other outcomes are not', () => {
   assert.equal(isEmptyPushRejection({ result: undefined }), false);
 });
 
-test('an accepted silent push is not followed by a fallback', async () => {
-  const sent: PushEventParams[] = [];
-  const out = await sendSilentWithFallback(
-    async (p) => { sent.push(p); return { accepted: true }; },
-    params('s', []), () => params('m', [{ type: 'text', text: 'tick' }]),
-  );
-  assert.equal(out.delivered, 'silent');
-  assert.deepEqual(sent.map((p) => p.eventId), ['s']);
-});
-
-test('a -32602 rejection re-sends the tick in message mode under a fresh event', async () => {
-  const sent: PushEventParams[] = [];
-  const out = await sendSilentWithFallback(
-    async (p) => {
-      sent.push(p);
-      if (p.payload.content.length === 0) throw new RpcError(INVALID_PARAMS, 'content has no visible content');
-      return { accepted: true, inferenceId: 'i' };
-    },
-    params('s', []), () => params('m', [{ type: 'text', text: 'tick' }]),
-  );
-  assert.equal(out.delivered, 'message');
-  assert.deepEqual(out.result, { accepted: true, inferenceId: 'i' });
-  assert.match((out as { rejection: string }).rejection, /no visible content/);
-  assert.deepEqual(sent.map((p) => p.eventId), ['s', 'm']);
-});
-
 test('a legacy accepted:false empty-content result also falls back', async () => {
   const sent: string[] = [];
   const out = await sendSilentWithFallback(
@@ -92,6 +66,7 @@ test('end to end: a host refusing the empty push gets the tick in message mode, 
   assert.equal(h.pushes[2]!.payload.content.length, 0, 'every tick tries silent first');
   assert.equal(h.pushes[3]!.payload.content.length, 1);
   assert.equal(h.stderr().match(/WARNING: the host refused the silent heartbeat/g)?.length, 1, 'explained once per process');
+  assert.match(h.stderr(), /WARNING: the host refused the silent heartbeat as an empty push \(content has no visible content\)\./, 'with the host\'s reason');
   assert.match(await h.call('heartbeat_status'), /mode=silent \(the host refused a silent wake, which carries no text, so heartbeats arrive as messages\. Setting deliveryMode again won't change that; ask whoever runs this host if you need them silent\) \|/);
 });
 

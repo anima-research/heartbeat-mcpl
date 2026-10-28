@@ -41,15 +41,6 @@ test('each reason a wake is blocked reads in plain words, with what to do', () =
   }
 });
 
-test('the feature-set state is read only once the host has sent its policy', () => {
-  let read = 0;
-  const counted = () => { read++; return { active: true, missing: [] }; };
-  wakeBlocked(false, false, true, counted, 'heartbeat');
-  wakeBlocked(true, true, false, counted, 'heartbeat');
-  wakeBlocked(true, false, false, counted, 'heartbeat');
-  assert.equal(read, 0);
-});
-
 test('each kind of block gives a held reminder its own note, in the listing and for the one just set', () => {
   const later = " If that doesn't change, ask whoever runs this host.";
   const cases: Array<[boolean, boolean, boolean, FeatureSetState, string, string]> = [

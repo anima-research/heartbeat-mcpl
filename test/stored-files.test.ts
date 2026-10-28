@@ -22,6 +22,8 @@ const replacedText = (what: string) => `Some text in the ${what} file couldn't b
 const asRoot = process.getuid?.() === 0 ? 'root reads and writes a file whatever its mode' : false;
 const row = { id: 'rem_ok', message: 'ok', createdAt: EPOCH, fireAt: EPOCH + 3_600_000, everySeconds: null };
 
+const literally = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 async function inLog(h: { stderr: () => string }, pattern: RegExp) {
   await until(() => pattern.test(h.stderr()), () => `expected the log to match ${pattern}, in\n${h.stderr()}`);
 }
@@ -52,7 +54,7 @@ test('a reminders file that isn\'t JSON is copied aside, the replies say so, and
   assert.ok(status.includes(' | reminders=0 | ') && status.endsWith(`"\n${noneLoaded}`), status);
   const [copy] = copies(h.files.dir, 'reminders.json');
   assert.equal(readFileSync(`${h.files.dir}/${copy}`, 'utf8'), '[{"id": "rem_torn", "mess');
-  await inLog(h, /the reminders file .* isn't JSON; copied it to .*reminders\.json\.unreadable-[0-9a-f]{12}, and starting without it/);
+  await inLog(h, new RegExp(`the reminders file .* isn't JSON; copied it to ${literally(`${h.files.dir}/${copy}`)}, and starting without it`));
   const added = await h.call('reminder_add', { message: 'later', inHours: 1 });
   assert.doesNotMatch(added, /can't be saved|wasn't saved/);
   assert.deepEqual(h.stored().map((r) => r.message), ['later']);

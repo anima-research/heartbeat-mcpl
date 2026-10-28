@@ -43,7 +43,7 @@ test('a call whose text holds U+2028 and U+2029, written raw as agent-framework 
 });
 
 test('no line heartbeat writes holds a raw U+2028 or U+2029, so a host that ends lines there gets each message whole', async (t) => {
-  const due = Date.now() + 500;
+  const due = Date.now();
   const h = await serverWithHost(() => ({}), {
     reminders: [{ id: 'rem_separated', message: SEPARATED, createdAt: due - 60_000, fireAt: due, everySeconds: null }],
   });
