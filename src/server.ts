@@ -2,7 +2,8 @@ import { McplConnection, method } from '@animalabs/mcpl-core';
 import type {
   McplInitializeParams, PushEventParams, JsonRpcId,
 } from '@animalabs/mcpl-core';
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { formatAgentDateTime } from './timezone.js';
 import { sendSilentWithFallback } from './silent-delivery.js';
 import { sendPush } from './push.js';
@@ -24,6 +25,11 @@ import type {
   FeatureSetDeclaration05, FeatureSetMap, FeatureSetState, FeatureSetWireEntry,
   Grant, InitializeCapabilities05, McplInitializeResult05, McplServerCapabilities05,
 } from './mcpl05.js';
+
+// tsx runs this file from src/ and tsc builds it to dist/src/, so package.json is one or two directories up.
+const { version: SERVER_VERSION } = createRequire(import.meta.url)(
+  existsSync(new URL('../package.json', import.meta.url)) ? '../package.json' : '../../package.json',
+) as { version: string };
 
 const FS_NAME = 'heartbeat';
 const MIN_REMINDER_SECONDS = 5;
@@ -296,7 +302,7 @@ export class HeartbeatServer {
     this.mcplEnabled = params?.capabilities?.experimental?.mcpl !== undefined;
     const serverCaps: McplServerCapabilities05 = { version: '0.5', pushEvents: true, featureSets };
     const capabilities: InitializeCapabilities05 = { tools: {}, ...(this.mcplEnabled ? { experimental: { mcpl: serverCaps } } : {}) };
-    const result: McplInitializeResult05 = { protocolVersion: '2024-11-05', capabilities, serverInfo: { name: 'heartbeat-mcpl', version: '0.1.0' } };
+    const result: McplInitializeResult05 = { protocolVersion: '2024-11-05', capabilities, serverInfo: { name: 'heartbeat-mcpl', version: SERVER_VERSION } };
     conn.sendResponse(msg.request.id, result);
     this.log('initialize answered' + (this.mcplEnabled ? ' (MCPL mode; awaiting featureSets/update policy)' : ' (MCP mode; push events unavailable)'));
   }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,7 +27,7 @@ export interface ServerFiles { dir: string; reminders: string; config: string; }
 
 export async function serverWithHost(
   answerPush: (p: PushEventParams) => PushAnswer | Promise<PushAnswer>,
-  { reminders = [] as unknown[], mcpl = true, policy = true, env = {} as Record<string, string>, prepare = (_files: ServerFiles) => {} } = {},
+  { reminders = [] as unknown[], mcpl = true, policy = true, env = {} as Record<string, string>, prepare = (_files: ServerFiles) => {}, viaSymlink = false } = {},
 ) {
   const src = join(ROOT, 'src');
   const builtAt = (() => { try { return statSync(BUILT).mtimeMs; } catch { return 0; } })();
@@ -38,8 +38,10 @@ export async function serverWithHost(
   const files: ServerFiles = { dir, reminders: remindersFile, config: join(dir, 'config.json') };
   writeFileSync(remindersFile, JSON.stringify(reminders));
   prepare(files);
-  const child = spawn(process.execPath, [BUILT, '--stdio'], {
-    cwd: ROOT,
+  const entry = viaSymlink ? join(dir, 'heartbeat-mcpl') : BUILT;
+  if (viaSymlink) symlinkSync(BUILT, entry);
+  const child = spawn(process.execPath, [entry, '--stdio'], {
+    cwd: tmpdir(),
     env: { ...process.env, ...env, HEARTBEAT_CONFIG_FILE: files.config, HEARTBEAT_REMINDERS_FILE: remindersFile },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -77,11 +79,12 @@ export async function serverWithHost(
     }
   })();
   const request = (method: string, params: unknown) => conn.sendRequest(method, params, CEILING_MS);
+  let serverInfo: { name: string; version: string };
   try {
-    await conn.sendRequest('initialize', {
+    ({ serverInfo } = await conn.sendRequest('initialize', {
       protocolVersion: '2024-11-05', capabilities: mcpl ? { experimental: { mcpl: { version: '0.5', pushEvents: true } } } : {},
       clientInfo: { name: 'test-host', version: '0' },
-    }, CEILING_MS);
+    }, CEILING_MS) as { serverInfo: { name: string; version: string } });
     if (mcpl && policy) await request('featureSets/update', POLICY);
   } catch (e) {
     conn.close();
@@ -106,7 +109,7 @@ export async function serverWithHost(
   const rawOut = () => Buffer.concat(out).toString('utf8');
   const writeRaw = (text: string) => { child.stdin.write(text); };
   return {
-    pushes, call, request, notify, pushCount, stored, stderr: () => stderr, close, hangUp, crash, files,
+    pushes, call, request, notify, pushCount, stored, stderr: () => stderr, close, hangUp, crash, files, serverInfo,
     rawOut, writeRaw, exited, exitCode: () => exitCode, child,
   };
 }
