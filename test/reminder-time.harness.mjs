@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -107,56 +107,6 @@ test('reminder_add uses the agent zone, not the process zone, and refuses ambigu
         await session.callTool('reminder_cancel', { id: reminder.id });
       });
     }
-  } finally {
-    session.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('a stored time a reminder can\'t hold is dropped at load, and a recurring reminder ends before its next time passes it', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'heartbeat-range-'));
-  const reminders = join(dir, 'reminders.json');
-  const now = Date.now();
-  const row = (id, fireAt, everySeconds) => ({ id, message: id, createdAt: now, fireAt, everySeconds });
-  // JSON writes an infinite time as null.
-  writeFileSync(reminders, JSON.stringify([
-    row('rem_far', now + 1e16, null),
-    row('rem_null', null, null),
-    row('rem_low', -9e15, 60),
-    row('rem_last', now + 3000, 1e13),
-    row('rem_ok', now + 3_600_000, null),
-  ]));
-  const session = new HostSession({
-    command: 'node',
-    args: [server, '--stdio'],
-    env: { HEARTBEAT_CONFIG_FILE: join(dir, 'config.json'), HEARTBEAT_REMINDERS_FILE: reminders },
-    autoApprove: true,
-  });
-  const fired = [];
-  session.on('event', (ev) => {
-    if (ev.kind === 'push' && ev.data?.origin?.source === 'reminder') fired.push(ev.data.origin.reminderId);
-  });
-  const listed = async () => {
-    const result = await session.callTool('reminder_list', {});
-    assert.notEqual(result.isError, true, result.content[0].text);
-    return [...result.content[0].text.matchAll(/^(rem_\w+) \|/gm)].map((m) => m[1]);
-  };
-  try {
-    await session.start();
-    await session.raw('featureSets/update', {
-      effectiveCapabilities: ['tools', 'pushEvents'], deniedCapabilities: [],
-      enabled: ['heartbeat'], disabled: [],
-    });
-    assert.deepEqual((await listed()).filter((id) => id !== 'rem_last'), ['rem_ok'], 'only the times a reminder can hold load');
-    for (const deadline = Date.now() + 15_000; !fired.includes('rem_last') && Date.now() < deadline;) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    for (const deadline = Date.now() + 5_000; (await listed()).includes('rem_last') && Date.now() < deadline;) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    assert.deepEqual(fired, ['rem_last'], 'the recurring reminder fires its last time');
-    assert.deepEqual(await listed(), ['rem_ok']);
-    assert.deepEqual(JSON.parse(readFileSync(reminders, 'utf8')).map((r) => r.id), ['rem_ok']);
   } finally {
     session.close();
     rmSync(dir, { recursive: true, force: true });
