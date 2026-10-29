@@ -7,6 +7,8 @@ import { createRequire } from 'node:module';
 import { formatAgentDateTime } from './timezone.js';
 import { sendSilentWithFallback } from './silent-delivery.js';
 import { sendPush } from './push.js';
+import { FileWake } from './filewake.js';
+import type { FileWakeConfig } from './filewake.js';
 import { formatReminderText } from './reminder-text.js';
 import { FIRST_REMINDER_TIME, LAST_REMINDER_TIME, canHoldTime, parseReminderTime } from './reminder-time.js';
 import { callAt } from './timer.js';
@@ -138,6 +140,7 @@ export interface HeartbeatServerOptions {
   remindersPath: string;
   timeZone: string;
   log?: (...a: unknown[]) => void;
+  fileWake?: FileWakeConfig;
 }
 
 export class HeartbeatServer {
@@ -146,6 +149,7 @@ export class HeartbeatServer {
   private readonly timeZone: string;
   private readonly log: (...a: unknown[]) => void;
   private readonly toolDefinitions: ToolDefinition[];
+  private readonly fileWake?: FileWake;
   private silentFallbackExplained = false;
   private configUnsaveable: Unsaveable | null = null;
   private remindersUnsaveable: Unsaveable | null = null;
@@ -174,6 +178,12 @@ export class HeartbeatServer {
     this.remindersPath = options.remindersPath;
     this.timeZone = options.timeZone;
     this.log = options.log ?? ((...a: unknown[]) => console.error('[heartbeat-mcpl]', ...a));
+    if (options.fileWake) {
+      this.fileWake = new FileWake(options.fileWake, (text, name) => new Promise<boolean>((resolve) => {
+        const sent = this.emitPush(text, { source: 'filewake', file: name }, 'filewake', (refusal) => resolve(refusal === null));
+        if (!sent) resolve(false);
+      }), this.log);
+    }
     this.toolDefinitions = toolDefinitionsIn(this.timeZone);
     this.config = this.loadConfig();
     this.reminders = this.loadReminders();
@@ -281,6 +291,7 @@ export class HeartbeatServer {
     this.reschedule();
     this.scheduleReminders();
     try {
+      this.fileWake?.start();
       while (!conn.isClosed) {
         const msg = await conn.nextMessage();
         if (msg.type === 'request') await this.handleRequest(msg.request as ReqMsg);
@@ -288,10 +299,12 @@ export class HeartbeatServer {
       }
     } catch (e) {
       if ((e as Error).name !== 'ConnectionClosedError') this.log('connection error:', e);
+    } finally {
+      this.cancelHeartbeat?.();
+      this.cancelReminderWake?.();
+      this.conn = null;
+      await this.fileWake?.stop();
     }
-    this.cancelHeartbeat?.();
-    this.cancelReminderWake?.();
-    this.conn = null;
   }
 
   private async handleInitialize(): Promise<void> {

@@ -95,6 +95,66 @@ crashes, fires again at the next start. If the host had in fact taken such a
 push, or took one but answered after 30 s, the agent hears that reminder a
 second time when it is sent again.
 
+## Filewake (opt-in)
+
+Set `FILEWAKE_DIR` to deliver text files as wakes. The directory is created at
+startup if missing. With this variable unset, filewake is entirely off and
+its other settings are ignored. Invalid enabled settings fail startup with
+the setting named.
+
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `FILEWAKE_DIR` | unset (off) | Nonblank directory path; relative paths use the process working directory. A symlink directory is not supported. |
+| `FILEWAKE_EXT` | empty | Optional case-sensitive suffix such as `.txt` or `.alert`; a dot followed by letters, digits, `_` or `-`. Empty matches all eligible files. |
+| `FILEWAKE_INTERVAL_MS` | `5000` | Integer milliseconds, `1000`–`86400000`, between completed polls. |
+| `FILEWAKE_MAX_CHARS` | `4000` | Integer Unicode code points of file text, `1`–`1000000`; the prefix is added afterward. |
+| `FILEWAKE_PREFIX` | empty | Literal text prepended to each file; every `{name}` is replaced by its basename. For example, `[filewake {name}] `. |
+
+Only regular files directly in the directory are considered, in sorted name
+order. Symlinks, subdirectories and dotfiles are ignored; no suffixes are
+reserved, so `.tmp` files are eligible too. Use a dedicated, trusted directory
+with one server consuming it. Producers should write a
+hidden temporary file there, close it, then rename it to a unique final name;
+do not modify or reuse published names. Files already present at startup
+are also delivered.
+
+The first poll runs after protocol initialization. Files are read and pushed
+one at a time, and polls never overlap. Reads are bounded to at most four
+bytes per configured character, even for huge files. Text is decoded as
+UTF-8 with replacement characters for invalid bytes, then truncated without
+splitting Unicode code points. No timestamp, truncation marker or other text
+is added by default. Empty files are sent too; a host that refuses empty text
+will leave them waiting unless a nonempty prefix is configured.
+
+Each wake uses the existing `heartbeat` feature set and push path, with
+`origin.source: "filewake"` and `origin.file` containing the basename. The
+host must grant wakes as described below; heartbeat pause and silent mode do
+not affect filewake. Each file is removed only after the host accepts its
+push. Blocked, refused, failed or unanswered pushes keep the file for the
+next poll, with at most one attempt per file per poll. A push waits at most
+30 seconds for an answer. Polling stops on disconnect.
+
+Filewake logs filenames, not file text. Per-file messages start with
+`filewake "<name>":` and use these forms:
+
+- `pushed` — accepted and removed.
+- `NOT pushed (will retry)` — blocked, refused or failed push.
+- `NOT pushed (will retry): <error>` — could not read a file; this includes
+  `not a regular file` if an entry changed type after the directory scan.
+- `pushed; file changed, kept for retry` — accepted, but the file changed.
+- `pushed; already removed` — accepted, but the file was already gone.
+- `pushed, but not removed (will retry): <error>` — accepted, but checking or
+  removing the file failed.
+
+A directory/poll error is logged as `filewake poll failed: <error>`.
+
+Files detected as replaced or changed while a push is pending are kept;
+read, directory and removal errors are logged and retried. Delivery is not
+exactly-once: a timeout, crash after acceptance, failed removal or changed
+file can result in another delivery. Keep this directory separate from the
+server's config and reminders files, and writable only by trusted producers:
+its contents become agent input, and accepted files are deleted.
+
 ## Silent mode
 
 A silent tick is an empty `push/event` carrying the host's silent-heartbeat
