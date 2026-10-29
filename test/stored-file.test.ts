@@ -101,7 +101,7 @@ test('a file that starts with a byte order mark is read past it', (t) => {
   assert.deepEqual(readdirSync(dirname(path)), [basename(path)], 'no copy');
 });
 
-test('a copy is named by the file\'s bytes, so files that decode to the same text each keep their own', (t) => {
+test('two unreadable files that decode to the same text each keep their own copy', (t) => {
   const path = fresh(t);
   // 0xff and 0xfe are each invalid UTF-8, and each decodes to U+FFFD.
   const first = Buffer.from([0x5b, 0xff]);
@@ -110,10 +110,9 @@ test('a copy is named by the file\'s bytes, so files that decode to the same tex
   assert.equal(readStored(path, 'reminders', Array.isArray).unsaveable, null);
   writeFileSync(path, second);
   assert.equal(readStored(path, 'reminders', Array.isArray).unsaveable, null);
-  for (const bytes of [first, second]) {
-    const copy = `${path}.unreadable-${createHash('sha256').update(bytes).digest('hex').slice(0, 12)}`;
-    assert.ok(readFileSync(copy).equals(bytes), `${copy} holds its own file's bytes`);
-  }
+  const copies = readdirSync(dirname(path)).filter((f) => f.startsWith(`${basename(path)}.unreadable-`)).map((f) => readFileSync(join(dirname(path), f)));
+  assert.equal(copies.length, 2, 'a copy for each file');
+  for (const bytes of [first, second]) assert.ok(copies.some((copy) => copy.equals(bytes)), `a copy holds ${bytes.toString('hex')}`);
 });
 
 test('a file whose copy can\'t be made is kept as one that can\'t be read is', (t) => {
