@@ -8,6 +8,7 @@ import { format } from 'node:util';
 import { McplConnection } from '@animalabs/mcpl-core';
 import type { PushEventParams } from '@animalabs/mcpl-core';
 import { HeartbeatServer } from '../src/server.js';
+import type { FileWakeConfig } from '../src/filewake.js';
 import { POLICY } from './scripted-host.js';
 import type { PushAnswer, ServerFiles } from './scripted-host.js';
 
@@ -48,7 +49,7 @@ export async function until(cond: () => boolean, what: () => string, tick = () =
 export async function serverInProcess(
   t: TestContext,
   answerPush: (p: PushEventParams) => PushAnswer | Promise<PushAnswer>,
-  { reminders = [] as unknown[], mcpl = true, policy = true, prepare = (_files: ServerFiles) => {} } = {},
+  { reminders = [] as unknown[], mcpl = true, policy = true, fileWake = undefined as FileWakeConfig | undefined, prepare = (_files: ServerFiles) => {} } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'hb-in-process-'));
   let conn: McplConnection | undefined;
@@ -76,7 +77,7 @@ export async function serverInProcess(
   const connect = () => {
     const toServer = new PassThrough();
     const toHost = new PassThrough();
-    const server = new HeartbeatServer({ configPath: files.config, remindersPath: remindersFile, timeZone: 'UTC', log });
+    const server = new HeartbeatServer({ configPath: files.config, remindersPath: remindersFile, timeZone: 'UTC', log, fileWake });
     served = server.serve(McplConnection.fromStreams(toServer, toHost));
     const host = McplConnection.fromStreams(toHost, toServer);
     conn = host;
