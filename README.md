@@ -171,7 +171,7 @@ capability-dependent behavior as unavailable — and per §6.7 a `featureSets/up
 and read back the degradation receipt (§6.7):
 
 ```jsonc
-{ "accepted": true, "mode": "full", "unavailableFeatures": [], "notes": [] }
+{ "accepted": true, "unavailableFeatures": [], "notes": [] }
 ```
 
 `effectiveCapabilities` is the sole allowlist (§5.4) and **absence of a path is denial**.

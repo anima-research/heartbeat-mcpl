@@ -79,7 +79,8 @@ export interface UnavailableFeature {
 /** SPEC §6.7: testimony about consequences, never a claim of entitlement. */
 export interface AcceptedReceipt {
   accepted: true;
-  mode: 'full' | 'degraded';
+  /** SPEC §6.7: absent when nothing degraded. */
+  mode?: 'degraded';
   unavailableFeatures: UnavailableFeature[];
   notes?: string[];
 }
@@ -244,7 +245,7 @@ export function buildReceipt(decls: FeatureSetMap, grant: Grant): AcceptedReceip
   }
   return {
     accepted: true,
-    mode: unavailable.length === 0 ? 'full' : 'degraded',
+    ...(unavailable.length === 0 ? {} : { mode: 'degraded' as const }),
     unavailableFeatures: unavailable,
     notes,
   };
