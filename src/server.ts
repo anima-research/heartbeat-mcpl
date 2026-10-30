@@ -357,7 +357,7 @@ export class HeartbeatServer {
     this.grant = parsed.grant;
     this.policyReady = true;
     const receipt = buildReceipt(declaredFeatureSets, this.grant);
-    this.log(`featureSets/update applied (Request): grant=[${this.grant.patterns.join(', ')}] mode=${receipt.mode}`);
+    this.log(`featureSets/update applied (Request): grant=[${this.grant.patterns.join(', ')}] ${receipt.mode === 'degraded' ? 'mode=degraded' : 'nothing degraded'}`);
     if (!parsed.hadEffectiveCapabilities) {
       this.log('featureSets/update carried no effectiveCapabilities; per §5.4 absence is denial, so nothing is granted');
     }
