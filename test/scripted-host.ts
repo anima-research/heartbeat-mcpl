@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { McplConnection } from '@animalabs/mcpl-core';
 import type { PushEventParams } from '@animalabs/mcpl-core';
+import type { InitializeCapabilities05 } from '../src/mcpl05.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const BUILT = join(ROOT, 'dist', 'src', 'index.js');
@@ -80,11 +81,12 @@ export async function serverWithHost(
   })();
   const request = (method: string, params: unknown) => conn.sendRequest(method, params, CEILING_MS);
   let serverInfo: { name: string; version: string };
+  let capabilities: InitializeCapabilities05;
   try {
-    ({ serverInfo } = await conn.sendRequest('initialize', {
+    ({ serverInfo, capabilities } = await conn.sendRequest('initialize', {
       protocolVersion: '2024-11-05', capabilities: mcpl ? { experimental: { mcpl: { version: '0.5', pushEvents: true } } } : {},
       clientInfo: { name: 'test-host', version: '0' },
-    }, CEILING_MS) as { serverInfo: { name: string; version: string } });
+    }, CEILING_MS) as { serverInfo: { name: string; version: string }; capabilities: InitializeCapabilities05 });
     if (mcpl && policy) await request('featureSets/update', POLICY);
   } catch (e) {
     conn.close();
@@ -109,7 +111,7 @@ export async function serverWithHost(
   const rawOut = () => Buffer.concat(out).toString('utf8');
   const writeRaw = (text: string) => { child.stdin.write(text); };
   return {
-    pushes, call, request, notify, pushCount, stored, stderr: () => stderr, close, hangUp, crash, files, serverInfo,
+    pushes, call, request, notify, pushCount, stored, stderr: () => stderr, close, hangUp, crash, files, serverInfo, capabilities,
     rawOut, writeRaw, exited, exitCode: () => exitCode, child,
   };
 }

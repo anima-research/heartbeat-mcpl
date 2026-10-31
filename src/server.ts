@@ -71,12 +71,35 @@ function isStoredReminder(x: unknown): x is StoredReminder {
     && (r.everySeconds === null || typeof r.everySeconds === 'number');
 }
 
+/** RFC-001 §3: the tags each kind of wake carries. */
+export const TAGS = {
+  tick: 'heartbeat:tick',
+  silent: 'heartbeat:silent',
+  reminder: 'heartbeat:reminder',
+  recurring: 'heartbeat:recurring',
+} as const;
+
 // uses names every capability this feature set exercises (SPEC §6.2, §6.4): it answers
 // tools/call and delivers each wake as push/event.
-const featureSetDecl: FeatureSetDeclaration05 = {
+export const featureSetDecl: FeatureSetDeclaration05 = {
   description: 'Periodic self-wake heartbeats, one-shot/recurring reminders, and schedule configuration',
   uses: ['tools', 'pushEvents'],
   rollback: false,
+  // RFC-001 §5: what the wakes carry, and how this server suggests treating them. Suggestions
+  // only; the host applies them if its agent or operator accepts (§5.2).
+  tagOntology: {
+    tags: {
+      [TAGS.tick]: { desc: 'Your periodic self-check-in, on the interval you set with heartbeat_configure, or one you fired with heartbeat_trigger.', facet: 'lifecycle' },
+      [TAGS.silent]: { desc: 'A silent tick (deliveryMode "silent"): an empty heartbeat:tick that a supporting host turns into private context instead of a message.', facet: 'content' },
+      [TAGS.reminder]: { desc: 'A reminder you set with reminder_add came due; its message follows a header naming the reminder and the current time.', facet: 'lifecycle' },
+      [TAGS.recurring]: { desc: 'The reminder repeats (with heartbeat:reminder).', facet: 'lifecycle' },
+    },
+    suggestedTreatment: [
+      { tagsAny: [TAGS.reminder], behavior: 'immediate', rationale: 'You set this reminder to wake you at this time. Without this, it waits unread until something else wakes you, so it reaches you late, or not at all.' },
+      { tagsAny: [TAGS.tick], behavior: 'immediate', rationale: 'Your own check-in, on the interval you chose. Without this, you check in only when something else wakes you; to be woken less often, lengthen the interval or pause it with heartbeat_configure instead.' },
+    ],
+    open: true,
+  },
 };
 const declaredFeatureSets: FeatureSetMap = { [FS_NAME]: featureSetDecl };
 const featureSets: FeatureSetWireEntry[] = [{ name: FS_NAME, ...featureSetDecl }];
@@ -496,7 +519,7 @@ export class HeartbeatServer {
     const silent = this.config.deliveryMode === 'silent';
     const sent = silent
       ? this.emitSilentHeartbeat(reason, now, text)
-      : this.emitPush(text, { source: 'heartbeat', reason }, 'heartbeat');
+      : this.emitPush(text, { source: 'heartbeat', reason }, 'heartbeat', [TAGS.tick]);
     this.log(`${sent ? 'fired' : 'DROPPED'} heartbeat (${reason}${silent ? ', silent' : ''})`);
   }
 
@@ -507,8 +530,8 @@ export class HeartbeatServer {
     if (blocked) { this.log(`suppressed heartbeat push/event — ${blocked.log}`); return false; }
     sendSilentWithFallback(
       (params) => conn.sendRequest(method.PUSH_EVENT, params),
-      this.pushParams('heartbeat', { source: 'heartbeat', reason, silent: true, scheduledAt: now }, []),
-      () => this.pushParams('heartbeat', { source: 'heartbeat', reason, silentFallback: true }, [{ type: 'text', text }]),
+      this.pushParams('heartbeat', { source: 'heartbeat', reason, silent: true, scheduledAt: now }, [], [TAGS.tick, TAGS.silent]),
+      () => this.pushParams('heartbeat', { source: 'heartbeat', reason, silentFallback: true }, [{ type: 'text', text }], [TAGS.tick]),
     )
       .then((outcome) => {
         this.silentFellBack = outcome.delivered === 'message';
@@ -524,11 +547,12 @@ export class HeartbeatServer {
     return true;
   }
 
-  private pushParams(kind: string, origin: Record<string, unknown>, content: Array<{ type: 'text'; text: string }>): PushEventParams {
+  private pushParams(kind: string, origin: Record<string, unknown>, content: Array<{ type: 'text'; text: string }>, tags: string[]): PushEventParams {
     return {
       featureSet: FS_NAME,
       eventId: `${kind}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       timestamp: new Date().toISOString(),
+      tags,
       origin,
       payload: { content },
     };
@@ -541,12 +565,12 @@ export class HeartbeatServer {
     else this.log('push response:', JSON.stringify(r));
   }
 
-  private emitPush(text: string, origin: Record<string, unknown>, kind: string, onSettled?: (refusal: string | null) => void): boolean {
+  private emitPush(text: string, origin: Record<string, unknown>, kind: string, tags: string[], onSettled?: (refusal: string | null) => void): boolean {
     const conn = this.conn;
     if (!conn) return false;
     const blocked = this.pushBlocked();
     if (blocked) { this.log(`suppressed ${kind} push/event — ${blocked.log}`); return false; }
-    void sendPush(conn, this.pushParams(kind, origin, [{ type: 'text', text }])).then((outcome) => {
+    void sendPush(conn, this.pushParams(kind, origin, [{ type: 'text', text }], tags)).then((outcome) => {
       if ('error' in outcome) this.log(`push failed (${kind}):`, outcome.error.message);
       else this.logPushResult(outcome.result, kind);
       onSettled?.(outcome.refusal);
@@ -693,6 +717,7 @@ export class HeartbeatServer {
       formatReminderText(rem, new Date(), this.timeZone),
       { source: 'reminder', reminderId: rem.id, recurring: rem.everySeconds !== null },
       'reminder',
+      rem.everySeconds !== null ? [TAGS.reminder, TAGS.recurring] : [TAGS.reminder],
       (refusal) => this.settleReminder(rem.id, refusal),
     );
     const kind = rem.everySeconds !== null ? 'recurring' : 'one-shot';
