@@ -152,6 +152,16 @@ Otherwise the marker is only an empty push, with nothing in it for the agent to 
 The wake policy MUST come before any policy that would skip `mcpl:push-event`s
 (e.g. a `discord-ambient` skip rule), since the gate is first-match-wins.
 
+### Tags
+
+Every wake carries [RFC-001](https://github.com/anima-research/mcpl/blob/main/RFC-001-event-tags.md)
+tags: `heartbeat:tick` on a heartbeat, with `heartbeat:silent` on a silent one, and
+`heartbeat:reminder` on a reminder, with `heartbeat:recurring` on a repeating one. The
+feature set declares them in a `tagOntology`, with suggested treatment: wake immediately on a
+reminder and on a tick, each rule with a rationale. A host offers the suggestions to its agent
+or operator and applies them only on acceptance (§5.2), so the wake policy above is still what
+makes wakes arrive on a host that hasn't asked.
+
 ## MCPL 0.5: the host must send initial policy as a Request
 
 This server implements MCPL 0.5 negotiated policy, which **changes the deployment

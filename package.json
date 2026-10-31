@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "npm run build && tsc -p test && node --import tsx --test test/timezone.test.ts test/policy.test.ts test/silent-delivery.test.ts test/held.test.ts test/refused-push.test.ts test/push.test.ts test/lines.test.ts test/stored-file.test.ts test/stored-files.test.ts test/reminder-text.test.ts test/reminder-time.test.ts test/timer.test.ts test/wake-blocked.test.ts test/call-texts.test.ts test/arguments.test.ts test/clock.test.ts test/intervals.test.ts test/reminders.test.ts test/restart.test.ts test/server-info.test.ts test/reminder-time.harness.mjs test/arguments.harness.mjs test/texts.harness.mjs test/silent-heartbeat.harness.mjs"
+    "test": "npm run build && tsc -p test && node --import tsx --test test/timezone.test.ts test/policy.test.ts test/silent-delivery.test.ts test/held.test.ts test/refused-push.test.ts test/push.test.ts test/lines.test.ts test/stored-file.test.ts test/stored-files.test.ts test/reminder-text.test.ts test/reminder-time.test.ts test/timer.test.ts test/wake-blocked.test.ts test/call-texts.test.ts test/arguments.test.ts test/clock.test.ts test/intervals.test.ts test/reminders.test.ts test/restart.test.ts test/server-info.test.ts test/tags.test.ts test/reminder-time.harness.mjs test/arguments.harness.mjs test/texts.harness.mjs test/silent-heartbeat.harness.mjs"
   },
   "dependencies": {
     "@animalabs/mcpl-core": "^0.4.0"
