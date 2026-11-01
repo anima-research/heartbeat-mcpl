@@ -537,6 +537,67 @@ test('unresolvable protected paths fall back to lexical comparison and still ref
   assert.ok(logs.every((line) => /WARNING:.*lexical.*ELOOP/.test(line)));
 });
 
+test('a symlinked state parent stays protected when its state file has an ELOOP', async (t) => {
+  const dir = directory(t);
+  const state = join(dir, 'state');
+  const alias = join(dir, 'alias');
+  mkdirSync(state);
+  symlinkSync(state, alias);
+  const configPath = join(alias, 'config.json');
+  symlinkSync(configPath, configPath);
+  const remindersPath = join(state, 'reminders.json');
+  const body = '[{"id":"private reminder"}]';
+  writeFileSync(remindersPath, body);
+  const logs: string[] = [];
+  const pushed: string[] = [];
+  let wake: FileWake | undefined;
+  let error: unknown;
+  try {
+    wake = new FileWake(config(state), async (_text, name) => { pushed.push(name); return true; },
+      (...a) => logs.push(a.join(' ')), { protectedPaths: [configPath] });
+  } catch (e) { error = e; }
+  // If the guard regresses, exercise the reviewer's real data-loss path.
+  if (wake) {
+    wake.start();
+    await turns();
+    await wake.stop();
+  }
+  assert.deepEqual(pushed, [], 'persisted reminders must never be pushed as a wake');
+  assert.match(String(error), /FILEWAKE_DIR.*must be separate from the persisted state directory/);
+  assert.match(logs.join('\n'), /WARNING:.*lexical.*ELOOP/);
+  assert.equal(readFileSync(remindersPath, 'utf8'), body, 'persisted reminders must not be unlinked');
+
+  const entrypoint = spawnSync(process.execPath, ['dist/src/index.js', '--stdio'], {
+    env: { ...process.env, FILEWAKE_DIR: state, HEARTBEAT_CONFIG_FILE: configPath,
+      HEARTBEAT_REMINDERS_FILE: join(alias, 'reminders.json') }, input: '', timeout: 5000,
+  });
+  assert.equal(entrypoint.status, 1, String(entrypoint.stderr));
+  assert.match(String(entrypoint.stderr), /must be separate from the persisted state directory/);
+  assert.equal(String(entrypoint.stdout), '', 'startup must refuse before any protocol delivery');
+  assert.equal(readFileSync(remindersPath, 'utf8'), body);
+});
+
+test('a symlinked state parent stays protected when its state file has an EACCES',
+  { skip: process.getuid?.() === 0 ? 'root can traverse any directory' : false }, (t) => {
+    const dir = directory(t);
+    const state = join(dir, 'state');
+    const alias = join(dir, 'alias');
+    mkdirSync(state);
+    symlinkSync(state, alias);
+    writeFileSync(join(state, 'config.json'), '{}');
+    writeFileSync(join(state, 'reminders.json'), '[]');
+    const logs: string[] = [];
+    chmodSync(state, 0o000);
+    try {
+      assert.throws(() => new FileWake(config(state), async () => true, (...a) => logs.push(a.join(' ')),
+        { protectedPaths: [join(alias, 'config.json')] }), /must be separate from the persisted state directory/);
+      assert.match(logs.join('\n'), /WARNING:.*lexical.*EACCES/);
+    } finally {
+      chmodSync(state, 0o755);
+    }
+    assert.equal(readFileSync(join(state, 'reminders.json'), 'utf8'), '[]');
+  });
+
 test('the state guard compares both dev and ino for directory aliases that realpath does not resolve', (t) => {
   const dir = directory(t);
   const inbox = join(dir, 'inbox');
@@ -607,21 +668,21 @@ test('a refusal followed by transport failures logs the new outcome and every tr
   let refuse = true;
   const h = await serverInProcess(t, () => refuse
     ? { result: { accepted: false, reason: 'private refusal' } }
-    : { error: [-32000, 'transport exploded'] }, { fileWake: config(dir) });
+    : { error: [-32000, 'transport exploded: private body\nprivate error detail'] }, { fileWake: config(dir) });
   await h.logged('filewake "note": NOT pushed (will retry)');
   const refusedLog = h.stderr();
   await h.advance(5000);
   assert.equal(h.stderr(), refusedLog, 'repeated host refusal stays quiet');
   refuse = false;
   await h.advance(5000);
-  await h.logged('push failed (filewake): the push failed: transport exploded');
+  await h.logged('push failed (filewake): the push failed (RpcError, code -32000); error message omitted');
   await turns();
   assert.equal((h.stderr().match(/filewake "note": NOT pushed/g) ?? []).length, 2);
   await h.advance(5000);
   await turns();
-  assert.equal((h.stderr().match(/push failed \(filewake\):.*transport exploded/g) ?? []).length, 2);
+  assert.equal((h.stderr().match(/push failed \(filewake\): the push failed \(RpcError, code -32000\); error message omitted/g) ?? []).length, 2);
   assert.equal((h.stderr().match(/filewake "note": NOT pushed/g) ?? []).length, 2);
-  assert.doesNotMatch(h.stderr(), /private body|private refusal/);
+  assert.doesNotMatch(h.stderr(), /private body|private refusal|transport exploded|private error detail/);
 });
 
 test('a leading UTF-8 BOM is stripped before the character cap, including a one-emoji budget', async (t) => {

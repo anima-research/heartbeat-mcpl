@@ -1,4 +1,4 @@
-import { ConnectionTimeoutError, McplConnection, method } from '@animalabs/mcpl-core';
+import { ConnectionTimeoutError, McplConnection, RpcError, method } from '@animalabs/mcpl-core';
 import type {
   McplInitializeParams, PushEventParams, JsonRpcId,
 } from '@animalabs/mcpl-core';
@@ -570,10 +570,14 @@ export class HeartbeatServer {
     const blocked = this.pushBlocked();
     if (blocked) { if (logOutcome) this.log(`suppressed ${kind} push/event — ${blocked.log}`); return false; }
     void sendPush(conn, this.pushParams(kind, origin, [{ type: 'text', text }])).then((outcome) => {
-      // Server-side failures must stay visible, including timeout delivery
-      // uncertainty. Filewake bounds summaries and omits host refusal text.
-      if ('error' in outcome) this.log(`push failed (${kind}):`, logOutcome ? outcome.error.message : outcome.refusal);
-      else if (logOutcome) this.logPushResult(outcome.result, kind);
+      // Failures must stay visible, but JSON-RPC error messages can contain
+      // host text too. Filewake logs only the class/code or our timeout warning.
+      if ('error' in outcome) {
+        const error = outcome.error;
+        const diagnostic = logOutcome ? error.message : error instanceof ConnectionTimeoutError ? outcome.refusal
+          : `the push failed (${error.name}${error instanceof RpcError ? `, code ${error.code}` : ''}); error message omitted`;
+        this.log(`push failed (${kind}):`, diagnostic);
+      } else if (logOutcome) this.logPushResult(outcome.result, kind);
       onSettled?.(outcome.refusal, outcome);
     }).catch((e) => this.log(`handling the host's answer to a ${kind} push failed:`, e));
     return true;

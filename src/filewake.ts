@@ -82,23 +82,24 @@ export class FileWake {
       for (const path of options.protectedPaths ?? []) {
         // Check both the named location (where recovery copies go) and a
         // symlink's target (which could itself be a regular inbox file).
-        let stateDirs: string[];
-        let sameDirectory = false;
-        try {
-          stateDirs = [canonicalPath(dirname(path)), dirname(canonicalPath(path))];
-          sameDirectory = stateDirs.some((dir) => {
-            try {
-              const state = statSync(dir);
-              return state.dev === inboxStat.dev && state.ino === inboxStat.ino;
-            } catch (e) {
-              if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-              return false;
-            }
-          });
-        } catch (e) {
+        const warn = (e: unknown) => {
           this.log(`WARNING: filewake could not resolve protected path ${JSON.stringify(path)}; using lexical state-directory comparison:`, (e as Error).message);
-          stateDirs = [resolve(dirname(path))];
-        }
+        };
+        // A file-resolution failure must not discard its resolved parent (or
+        // vice versa). Keep each successful candidate independently.
+        const stateDirs = [() => canonicalPath(dirname(path)), () => dirname(canonicalPath(path))].map((candidate) => {
+          try { return candidate(); }
+          catch (e) { warn(e); return resolve(dirname(path)); }
+        });
+        const sameDirectory = stateDirs.some((dir) => {
+          try {
+            const state = statSync(dir);
+            return state.dev === inboxStat.dev && state.ino === inboxStat.ino;
+          } catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== 'ENOENT') warn(e);
+            return false;
+          }
+        });
         if (sameDirectory || resolve(config.dir) === resolve(dirname(path)) || stateDirs.includes(inbox)) {
           throw new Error(`must be separate from the persisted state directory for ${JSON.stringify(path)}`);
         }

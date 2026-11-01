@@ -107,6 +107,8 @@ separate inbox; a dedicated child directory is fine.
 Existing directories are also compared by device/inode identity (including
 bind-mount aliases). If a protected state path cannot be resolved, startup
 warns and falls back to lexical path comparison, still rejecting a collision.
+Each candidate is checked independently: an unresolved state file does not
+discard a successfully resolved parent directory.
 
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
@@ -153,7 +155,8 @@ Filewake logs filenames, not file text. Per-file messages start with
   or a scan sees that basename absent. Retries continue each poll without
   logging host refusal text or host responses. Transport errors and
   timeouts are always logged separately as `push failed (filewake): <error>`,
-  including the timeout warning that a retry may deliver the file twice.
+  using the error class/code without host error-message text or data. Timeouts
+  retain the server-authored warning that a retry may deliver the file twice.
 - `NOT pushed (will retry): <error>` — could not read a file; this includes
   `not a regular file` if an entry changed type after the directory scan.
 - `pushed; file changed, kept for retry` — accepted, but the file changed.
