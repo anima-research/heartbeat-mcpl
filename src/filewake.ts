@@ -1,6 +1,6 @@
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, unlinkSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readlinkSync, readSync, realpathSync, unlinkSync } from 'node:fs';
 import type { Stats } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 export interface FileWakeConfig {
   dir: string;
@@ -37,8 +37,32 @@ function unchanged(a: Stats, b: Stats): boolean {
     && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
 }
 
+// Resolve existing ancestors too: state files/directories need not exist yet.
+function canonicalPath(path: string): string {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT' || dirname(absolute) === absolute) throw e;
+    // realpath fails on a dangling state-file symlink, but a future save can
+    // create its target. Protect that target's directory before it exists.
+    try {
+      if (lstatSync(absolute).isSymbolicLink()) {
+        return canonicalPath(resolve(dirname(absolute), readlinkSync(absolute)));
+      }
+    } catch (missing) {
+      if ((missing as NodeJS.ErrnoException).code !== 'ENOENT') throw missing;
+    }
+    return join(canonicalPath(dirname(absolute)), basename(absolute));
+  }
+}
+
 export class FileWake {
   private stopped = true;
+  private running = false;
+  private retryRequested = false;
+  private blockedReason: string | null = null;
+  private refusalLogged = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pending: Promise<void> | undefined;
 
@@ -46,10 +70,19 @@ export class FileWake {
     private readonly config: FileWakeConfig,
     private readonly push: (text: string, name: string) => Promise<boolean>,
     private readonly log: (...a: unknown[]) => void,
+    private readonly options: { protectedPaths?: readonly string[]; blocked?: () => string | null } = {},
   ) {
     try {
       mkdirSync(config.dir, { recursive: true });
       if (!lstatSync(config.dir).isDirectory()) throw new Error('not a directory (symlinks are not supported)');
+      const inbox = realpathSync(config.dir);
+      for (const path of options.protectedPaths ?? []) {
+        // Check both the named location (where recovery copies go) and a
+        // symlink's target (which could itself be a regular inbox file).
+        if (inbox === canonicalPath(dirname(path)) || inbox === dirname(canonicalPath(path))) {
+          throw new Error(`must be separate from the persisted state directory for ${JSON.stringify(path)}`);
+        }
+      }
     } catch (e) {
       throw new Error(`FILEWAKE_DIR ${JSON.stringify(config.dir)}: ${(e as Error).message}`);
     }
@@ -58,6 +91,18 @@ export class FileWake {
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
+    this.retryRequested = false;
+    this.run();
+  }
+
+  /** Policy changes request one scan, never a concurrent poll. */
+  retry(): void {
+    if (this.stopped) return;
+    if (this.running) {
+      this.retryRequested = true;
+      return;
+    }
+    clearTimeout(this.timer);
     this.run();
   }
 
@@ -68,19 +113,37 @@ export class FileWake {
   }
 
   private run(): void {
+    this.running = true;
     this.pending = this.poll().catch((e) => this.log('filewake poll failed:', (e as Error).message)).then(() => {
-      if (!this.stopped) this.timer = setTimeout(() => this.run(), this.config.intervalMs);
+      this.running = false;
+      if (this.stopped) return;
+      if (this.retryRequested) {
+        this.retryRequested = false;
+        this.run();
+      } else {
+        this.timer = setTimeout(() => this.run(), this.config.intervalMs);
+      }
     });
   }
 
+  private deliveryBlocked(): boolean {
+    const reason = this.options.blocked?.() ?? null;
+    if (reason !== null && reason !== this.blockedReason) this.log(`filewake blocked: ${reason}`);
+    this.blockedReason = reason;
+    return reason !== null;
+  }
+
   private async poll(): Promise<void> {
+    if (this.deliveryBlocked()) return;
     const { dir, ext, maxChars, prefix } = this.config;
     if (!lstatSync(dir).isDirectory()) throw new Error('FILEWAKE_DIR is no longer a directory');
     const names = readdirSync(dir, { withFileTypes: true })
       .filter((entry) => entry.isFile() && !entry.name.startsWith('.') && entry.name.endsWith(ext))
       .map((entry) => entry.name).sort();
+    const present = new Set(names);
+    for (const name of this.refusalLogged) if (!present.has(name)) this.refusalLogged.delete(name);
     for (const name of names) {
-      if (this.stopped) break;
+      if (this.stopped || this.deliveryBlocked()) break;
       const label = `filewake ${JSON.stringify(name)}`;
       const path = join(dir, name);
       let accepted = false;
@@ -96,15 +159,16 @@ export class FileWake {
             continue;
           }
           // A Unicode code point occupies at most four UTF-8 bytes. Never read the
-          // whole file just to truncate it; discard an incomplete boundary sequence.
-          const bytes = Buffer.alloc(Math.min(before.size, maxChars * 4));
+          // whole file just to truncate it; allow three extra bytes for a leading BOM
+          // and discard an incomplete boundary sequence.
+          const bytes = Buffer.alloc(Math.min(before.size, maxChars * 4 + 3));
           let used = 0;
           while (used < bytes.length) {
             const n = readSync(fd, bytes, used, bytes.length - used, null);
             if (n === 0) break;
             used += n;
           }
-          const decoded = new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes.subarray(0, used), { stream: used < before.size });
+          const decoded = new TextDecoder('utf-8').decode(bytes.subarray(0, used), { stream: used < before.size });
           text = prefix.replaceAll('{name}', () => name) + Array.from(decoded).slice(0, maxChars).join('');
           if (!unchanged(before, fstatSync(fd))) throw new Error('file changed while reading');
         } finally {
@@ -112,9 +176,11 @@ export class FileWake {
         }
         accepted = await this.push(text, name);
         if (!accepted) {
-          this.log(`${label}: NOT pushed (will retry)`);
+          if (!this.refusalLogged.has(name)) this.log(`${label}: NOT pushed (will retry)`);
+          this.refusalLogged.add(name);
           continue;
         }
+        this.refusalLogged.delete(name);
         // A producer may have replaced this name while the host was answering.
         if (!unchanged(before, lstatSync(path))) {
           this.log(`${label}: pushed; file changed, kept for retry`);

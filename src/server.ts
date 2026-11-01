@@ -180,9 +180,12 @@ export class HeartbeatServer {
     this.log = options.log ?? ((...a: unknown[]) => console.error('[heartbeat-mcpl]', ...a));
     if (options.fileWake) {
       this.fileWake = new FileWake(options.fileWake, (text, name) => new Promise<boolean>((resolve) => {
-        const sent = this.emitPush(text, { source: 'filewake', file: name }, 'filewake', (refusal) => resolve(refusal === null));
+        const sent = this.emitPush(text, { source: 'filewake', file: name }, 'filewake', (refusal) => resolve(refusal === null), false);
         if (!sent) resolve(false);
-      }), this.log);
+      }), this.log, {
+        protectedPaths: [this.configPath, this.remindersPath],
+        blocked: () => this.pushBlocked()?.log ?? null,
+      });
     }
     this.toolDefinitions = toolDefinitionsIn(this.timeZone);
     this.config = this.loadConfig();
@@ -365,6 +368,7 @@ export class HeartbeatServer {
       this.log(`featureSets/update rejected as malformed: ${parsed.error}; grant cleared`);
       conn.sendError(req.id, -32602, `Invalid featureSets/update: ${parsed.error}`);
       this.retryRefused();
+      this.fileWake?.retry();
       return;
     }
     this.grant = parsed.grant;
@@ -380,6 +384,7 @@ export class HeartbeatServer {
     for (const note of receipt.notes ?? []) this.log(`receipt note: ${note}`);
     conn.sendResponse(req.id, receipt);
     this.retryRefused();
+    this.fileWake?.retry();
   }
 
   private handleFeatureSetsUpdateNotification(notif: NotifMsg): void {
@@ -393,6 +398,7 @@ export class HeartbeatServer {
       + (this.policyReady ? '' : '; ready state NOT established — §6.7 requires a Request'));
     if (!this.requestSeen) this.notificationOnly = true;
     this.retryRefused();
+    this.fileWake?.retry();
     if (this.notificationOnly) {
       this.log('WARNING: initial policy has still not arrived as a Request. Per SPEC §5.3 every '
         + 'capability-dependent behavior stays unavailable, so NO heartbeat or reminder will be '
@@ -554,14 +560,17 @@ export class HeartbeatServer {
     else this.log('push response:', JSON.stringify(r));
   }
 
-  private emitPush(text: string, origin: Record<string, unknown>, kind: string, onSettled?: (refusal: string | null) => void): boolean {
+  private emitPush(text: string, origin: Record<string, unknown>, kind: string, onSettled?: (refusal: string | null) => void, logOutcome = true): boolean {
     const conn = this.conn;
     if (!conn) return false;
     const blocked = this.pushBlocked();
-    if (blocked) { this.log(`suppressed ${kind} push/event — ${blocked.log}`); return false; }
+    if (blocked) { if (logOutcome) this.log(`suppressed ${kind} push/event — ${blocked.log}`); return false; }
     void sendPush(conn, this.pushParams(kind, origin, [{ type: 'text', text }])).then((outcome) => {
-      if ('error' in outcome) this.log(`push failed (${kind}):`, outcome.error.message);
-      else this.logPushResult(outcome.result, kind);
+      // Filewake owns its bounded per-file outcome logging.
+      if (logOutcome) {
+        if ('error' in outcome) this.log(`push failed (${kind}):`, outcome.error.message);
+        else this.logPushResult(outcome.result, kind);
+      }
       onSettled?.(outcome.refusal);
     }).catch((e) => this.log(`handling the host's answer to a ${kind} push failed:`, e));
     return true;

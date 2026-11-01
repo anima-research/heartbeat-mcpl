@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { closeSync, existsSync, mkdtempSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
+import { HeartbeatServer } from '../src/server.js';
 import { FileWake, fileWakeConfig } from '../src/filewake.js';
 import type { FileWakeConfig } from '../src/filewake.js';
 import { serverInProcess, until, useClock } from './in-process-host.js';
@@ -206,6 +207,7 @@ test('an unreadable poll is logged and retried; stopping waits for an outstandin
   writeFileSync(join(inbox, 'b'), 'later');
   t.mock.timers.tick(5000);
   await until(() => seen.length === 1, () => 'no retry');
+  wake.retry(); // A queued policy retry must not survive stopping either.
   let stopped = false;
   const stopping = wake.stop().then(() => { stopped = true; });
   await turns();
@@ -230,10 +232,13 @@ test('filewake uses server policy and accepted/refused/failed push outcomes, ind
     if (attempt === 2) return { error: [-32000, 'failed'] };
     return {};
   }, { fileWake: config(dir), policy: false, prepare: (files) => writeFileSync(files.config, JSON.stringify({ paused: true, deliveryMode: 'silent' })) });
-  await h.logged('filewake "note.txt": NOT pushed (will retry)');
+  assert.match(h.stderr(), /filewake blocked: no valid featureSets\/update Request/);
   assert.equal(h.pushes.length, 0);
   await h.request('featureSets/update', POLICY);
-  for (let i = 1; i <= 3; i++) {
+  await h.pushCount(1);
+  await turns();
+  assert.ok(existsSync(join(dir, 'note.txt')));
+  for (let i = 2; i <= 3; i++) {
     await h.advance(5000);
     await h.pushCount(i);
     await turns();
@@ -401,4 +406,248 @@ test('a file already gone after acceptance is logged as pushed and already remov
   await turns();
   assert.equal(pushes, 1);
   assert.equal(logs.length, 1);
+});
+
+test('startup protects both persisted state directories, including missing files and path aliases', (t) => {
+  const dir = directory(t);
+  const inbox = join(dir, 'inbox');
+  const outside = join(dir, 'state');
+  mkdirSync(inbox);
+  mkdirSync(outside);
+  symlinkSync(inbox, join(dir, 'alias'));
+  symlinkSync(dir, join(dir, 'parent-alias'));
+  writeFileSync(join(inbox, 'config.json'), 'not JSON');
+  writeFileSync(join(inbox, 'config.json.unreadable-existing'), 'recovery bytes');
+  writeFileSync(join(inbox, 'reminders.json'), '[]');
+  symlinkSync(join(inbox, 'config.json'), join(outside, 'linked-config'));
+  symlinkSync(join(inbox, 'future-config'), join(outside, 'dangling-config'));
+  const paths = [
+    join(inbox, 'config.json'),
+    join(inbox, 'missing.json'),
+    relative(process.cwd(), join(inbox, 'config.json')),
+    join(dir, 'alias', 'missing.json'),
+    join(dir, 'parent-alias', 'inbox', 'missing.json'),
+    join(outside, 'linked-config'),
+    join(outside, 'dangling-config'),
+  ];
+  for (const path of paths) {
+    for (const field of ['configPath', 'remindersPath']) {
+      assert.throws(() => new HeartbeatServer({
+        configPath: join(outside, 'config.json'), remindersPath: join(outside, 'reminders.json'),
+        timeZone: 'UTC', log: () => {}, fileWake: config(inbox, { ext: '.alert' }), [field]: path,
+      }), /FILEWAKE_DIR.*must be separate from the persisted state directory/);
+    }
+  }
+  assert.throws(() => new HeartbeatServer({
+    configPath: join(inbox, 'config.json'), remindersPath: join(outside, 'reminders.json'),
+    timeZone: 'UTC', log: () => {}, fileWake: config(join(dir, 'parent-alias', 'inbox')),
+  }), /FILEWAKE_DIR.*must be separate from the persisted state directory/);
+  assert.equal(readFileSync(join(inbox, 'config.json'), 'utf8'), 'not JSON');
+  assert.equal(readFileSync(join(inbox, 'config.json.unreadable-existing'), 'utf8'), 'recovery bytes');
+  // Direct-only polling allows a dedicated child inbox beneath a state directory.
+  assert.doesNotThrow(() => new HeartbeatServer({
+    configPath: join(dir, 'new-state', 'config.json'), remindersPath: join(dir, 'reminders.json'),
+    timeZone: 'UTC', log: () => {}, fileWake: config(inbox),
+  }));
+});
+
+test('the built entrypoint rejects default and custom state directories before consuming state or recovery copies', (t) => {
+  const dir = directory(t);
+  writeFileSync(join(dir, 'heartbeat-config.json'), '{}');
+  writeFileSync(join(dir, 'heartbeat-reminders.json'), '[]');
+  writeFileSync(join(dir, 'heartbeat-config.json.unreadable-copy'), 'kept');
+  for (const field of [undefined, 'HEARTBEAT_CONFIG_FILE', 'HEARTBEAT_REMINDERS_FILE']) {
+    const env: NodeJS.ProcessEnv = { ...process.env, FILEWAKE_DIR: dir };
+    delete env.HEARTBEAT_CONFIG_FILE;
+    delete env.HEARTBEAT_REMINDERS_FILE;
+    if (field) {
+      env.HEARTBEAT_CONFIG_FILE = join(dir, 'outside', 'config.json');
+      env.HEARTBEAT_REMINDERS_FILE = join(dir, 'outside', 'reminders.json');
+      env[field] = join(dir, 'missing-state.json');
+    }
+    const result = spawnSync(process.execPath, [join(process.cwd(), 'dist/src/index.js'), '--stdio'], {
+      cwd: dir, env, input: '', timeout: 5000,
+    });
+    assert.equal(result.status, 1, String(result.stderr));
+    assert.match(String(result.stderr), /FILEWAKE_DIR.*must be separate from the persisted state directory/);
+    assert.equal(String(result.stdout), '');
+  }
+  assert.equal(readFileSync(join(dir, 'heartbeat-config.json'), 'utf8'), '{}');
+  assert.equal(readFileSync(join(dir, 'heartbeat-reminders.json'), 'utf8'), '[]');
+  assert.equal(readFileSync(join(dir, 'heartbeat-config.json.unreadable-copy'), 'utf8'), 'kept');
+});
+
+test('a leading UTF-8 BOM is stripped before the character cap, including a one-emoji budget', async (t) => {
+  for (const maxChars of [1, 3]) {
+    const dir = directory(t);
+    const bodies = ['\uFEFF😀😀😀tail', '\uFEFFabcde', '\uFEFF', 'a\uFEFFb', '\uFEFF\uFEFFx'];
+    for (const [i, body] of bodies.entries()) writeFileSync(join(dir, String(i)), body);
+    const seen: string[] = [];
+    const { wake, logs } = watcher(t, config(dir, { maxChars, prefix: '[{name}] ' }), async (text) => {
+      seen.push(text);
+      return true;
+    });
+    wake.start();
+    await until(() => logs.length === bodies.length, () => logs.join('\n'));
+    assert.deepEqual(seen, bodies.map((body, i) =>
+      `[${i}] ` + Array.from(body.replace(/^\uFEFF/, '')).slice(0, maxChars).join('')));
+    await wake.stop();
+  }
+});
+
+test('policy grants deliver startup files without advancing a day-long poll interval; reductions still block', async (t) => {
+  useClock(t);
+  const dir = directory(t);
+  writeFileSync(join(dir, 'startup'), 'ready');
+  const h = await serverInProcess(t, () => ({}), { fileWake: config(dir, { intervalMs: 86_400_000 }), policy: false });
+  assert.equal(h.pushes.length, 0);
+  h.notify('featureSets/update', POLICY);
+  await turns();
+  assert.equal(h.pushes.length, 0, 'a notification cannot establish policy readiness');
+  await h.request('featureSets/update', POLICY);
+  await h.logged('filewake "startup": pushed');
+  assert.equal(h.pushes.length, 1);
+  h.notify('featureSets/update', { ...POLICY, effectiveCapabilities: ['tools'] });
+  await turns();
+  writeFileSync(join(dir, 'after-reduction'), 'keep');
+  await h.advance(86_400_000);
+  assert.equal(h.pushes.length, 1);
+  assert.ok(existsSync(join(dir, 'after-reduction')));
+  await h.request('featureSets/update', POLICY);
+  await h.logged('filewake "after-reduction": pushed');
+  assert.equal(h.pushes.length, 2);
+});
+
+test('policy retries coalesce while a push is pending and cannot restart a stopped watcher', async (t) => {
+  useClock(t);
+  const dir = directory(t);
+  writeFileSync(join(dir, 'note'), 'text');
+  let answer!: (accepted: boolean) => void;
+  let attempts = 0;
+  const { wake, logs } = watcher(t, config(dir, { intervalMs: 86_400_000 }), async () => {
+    attempts++;
+    if (attempts === 1) return new Promise<boolean>((resolve) => { answer = resolve; });
+    return false;
+  });
+  wake.start();
+  await turns();
+  for (let i = 0; i < 20; i++) wake.retry();
+  await turns();
+  assert.equal(attempts, 1);
+  answer(false);
+  await until(() => attempts === 2, () => 'missing coalesced retry');
+  await turns();
+  assert.equal(attempts, 2, 'all pending retries collapse to one additional scan');
+  assert.equal(logs.length, 1, 'repeated refusal is logged only once');
+  await wake.stop();
+  wake.retry();
+  t.mock.timers.tick(86_400_000);
+  await turns();
+  assert.equal(attempts, 2);
+});
+
+test('blocked polls skip even directory reads and log only a changed blocked state', async (t) => {
+  useClock(t);
+  const dir = directory(t);
+  const inbox = join(dir, 'inbox');
+  let blocked: string | null = 'not ready';
+  let attempts = 0;
+  const logs: string[] = [];
+  const wake = new FileWake(config(inbox), async () => { attempts++; return true; },
+    (...a) => logs.push(a.join(' ')), { blocked: () => blocked });
+  t.after(() => wake.stop());
+  rmSync(inbox, { recursive: true });
+  wake.start();
+  await turns();
+  for (let i = 0; i < 4; i++) {
+    t.mock.timers.tick(5000);
+    await turns();
+  }
+  assert.deepEqual(logs, ['filewake blocked: not ready'], 'no directory errors or per-poll messages');
+  blocked = 'denied';
+  wake.retry();
+  await turns();
+  assert.deepEqual(logs, ['filewake blocked: not ready', 'filewake blocked: denied']);
+  mkdirSync(inbox);
+  writeFileSync(join(inbox, 'ready'), 'text');
+  blocked = null;
+  wake.retry();
+  await until(() => !existsSync(join(inbox, 'ready')), () => logs.join('\n'));
+  assert.equal(attempts, 1);
+});
+
+test('server logging stays bounded across blocked and repeatedly refused files, then recovers', async (t) => {
+  useClock(t);
+  const dir = directory(t);
+  const names = Array.from({ length: 12 }, (_, i) => String(i).padStart(2, '0'));
+  for (const name of names) writeFileSync(join(dir, name), 'private body');
+  let accepted = false;
+  const h = await serverInProcess(t, () => ({ result: { accepted, reason: 'private refusal' } }),
+    { fileWake: config(dir), policy: false });
+  const blockedLog = h.stderr();
+  for (let i = 0; i < 4; i++) await h.advance(5000);
+  assert.equal(h.stderr(), blockedLog);
+  assert.equal(h.pushes.length, 0);
+  assert.doesNotMatch(blockedLog, /NOT pushed|suppressed filewake/);
+  await h.request('featureSets/update', POLICY);
+  await h.pushCount(names.length);
+  await turns();
+  const refusedLog = h.stderr();
+  assert.equal((refusedLog.match(/NOT pushed/g) ?? []).length, names.length);
+  for (let i = 0; i < 4; i++) await h.advance(5000);
+  assert.equal(h.pushes.length, names.length * 5, 'refused files still retry once per poll');
+  assert.equal(h.stderr(), refusedLog, 'neither the server nor watcher logs repeated refusals');
+  assert.doesNotMatch(refusedLog, /private body|private refusal/);
+  for (const name of names) assert.ok(existsSync(join(dir, name)));
+  accepted = true;
+  await h.advance(5000);
+  await h.until(() => names.every((name) => !existsSync(join(dir, name))), () => h.stderr());
+  assert.equal(h.pushes.length, names.length * 6);
+  assert.equal((h.stderr().match(/: pushed/g) ?? []).length, names.length);
+});
+
+test('policy changes during an in-flight push respect reductions before starting another file', async (t) => {
+  useClock(t);
+  const dir = directory(t);
+  writeFileSync(join(dir, 'a'), 'first');
+  writeFileSync(join(dir, 'b'), 'second');
+  let answer!: (value: PushAnswer) => void;
+  const h = await serverInProcess(t, () => new Promise<PushAnswer>((resolve) => { answer = resolve; }),
+    { fileWake: config(dir, { intervalMs: 86_400_000 }) });
+  await h.pushCount(1);
+  for (let i = 0; i < 3; i++) await h.request('featureSets/update', POLICY);
+  assert.equal(h.pushes.length, 1, 'grants cannot overlap a pending push');
+  await h.request('featureSets/update', { ...POLICY, effectiveCapabilities: ['tools'] });
+  answer({});
+  await h.logged('filewake "a": pushed');
+  await turns();
+  assert.equal(h.pushes.length, 1, 'a reduction holds the next file and the coalesced scan');
+  assert.ok(existsSync(join(dir, 'b')));
+  await assert.rejects(h.request('featureSets/update', { enabled: 123 }));
+  assert.equal(h.pushes.length, 1, 'malformed policy fails closed too');
+  await h.request('featureSets/update', POLICY);
+  await h.pushCount(2);
+  assert.deepEqual(h.pushes.map((p) => origin(p).file), ['a', 'b']);
+  answer({});
+  await h.logged('filewake "b": pushed');
+});
+
+test('the built entrypoint delivers a BOM-prefixed startup file immediately on policy grant', async (t) => {
+  const dir = directory(t);
+  const inbox = join(dir, 'inbox');
+  mkdirSync(inbox);
+  writeFileSync(join(inbox, 'startup.alert'), '\uFEFF😀😀😀tail');
+  const h = await serverWithHost(() => ({}), { policy: false, env: {
+    FILEWAKE_DIR: inbox, FILEWAKE_EXT: '.alert', FILEWAKE_INTERVAL_MS: '86400000',
+    FILEWAKE_MAX_CHARS: '3', FILEWAKE_PREFIX: '[{name}] ',
+  } });
+  t.after(h.close);
+  assert.equal(h.pushes.length, 0);
+  assert.ok(existsSync(join(inbox, 'startup.alert')));
+  await h.request('featureSets/update', POLICY);
+  await h.pushCount(1);
+  await logged(h, 'filewake "startup.alert": pushed');
+  assert.deepEqual(h.pushes[0].payload, { content: [{ type: 'text', text: '[startup.alert] 😀😀😀' }] });
+  assert.ok(!existsSync(join(inbox, 'startup.alert')));
+  await h.hangUp();
 });

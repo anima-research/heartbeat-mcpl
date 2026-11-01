@@ -100,7 +100,10 @@ second time when it is sent again.
 Set `FILEWAKE_DIR` to deliver text files as wakes. The directory is created at
 startup if missing. With this variable unset, filewake is entirely off and
 its other settings are ignored. Invalid enabled settings fail startup with
-the setting named.
+the setting named. Startup also rejects an inbox that is the directory of
+the config or reminders file (including path/symlink aliases), regardless of
+the suffix filter, to protect persisted state and recovery copies. Use a
+separate inbox; a dedicated child directory is fine.
 
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
@@ -120,8 +123,9 @@ are also delivered.
 
 The first poll runs after protocol initialization. Files are read and pushed
 one at a time, and polls never overlap. Reads are bounded to at most four
-bytes per configured character, even for huge files. Text is decoded as
-UTF-8 with replacement characters for invalid bytes, then truncated without
+bytes per configured character plus three bytes for a possible leading BOM,
+even for huge files. Text is decoded as UTF-8 with replacement characters for
+invalid bytes; a leading UTF-8 BOM is stripped before truncating without
 splitting Unicode code points. No timestamp, truncation marker or other text
 is added by default. Empty files are sent too; a host that refuses empty text
 will leave them waiting unless a nonempty prefix is configured.
@@ -131,14 +135,19 @@ Each wake uses the existing `heartbeat` feature set and push path, with
 host must grant wakes as described below; heartbeat pause and silent mode do
 not affect filewake. Each file is removed only after the host accepts its
 push. Blocked, refused, failed or unanswered pushes keep the file for the
-next poll, with at most one attempt per file per poll. A push waits at most
-30 seconds for an answer. Polling stops on disconnect.
+next poll, with at most one attempt per file per poll. While policy blocks
+delivery, scans are skipped and a blocked-state message is logged only when
+the reason changes. Policy updates request an immediate, coalesced scan,
+without overlapping a pending push or waiting for the poll interval. A push
+waits at most 30 seconds for an answer. Polling stops on disconnect.
 
 Filewake logs filenames, not file text. Per-file messages start with
 `filewake "<name>":` and use these forms:
 
 - `pushed` — accepted and removed.
-- `NOT pushed (will retry)` — blocked, refused or failed push.
+- `NOT pushed (will retry)` — refused or failed push; logged once per queued
+  basename until success or a scan sees that basename absent. Retries continue
+  each poll without repeating the refusal or host response logs.
 - `NOT pushed (will retry): <error>` — could not read a file; this includes
   `not a regular file` if an entry changed type after the directory scan.
 - `pushed; file changed, kept for retry` — accepted, but the file changed.
@@ -146,6 +155,7 @@ Filewake logs filenames, not file text. Per-file messages start with
 - `pushed, but not removed (will retry): <error>` — accepted, but checking or
   removing the file failed.
 
+A blocked state is logged as `filewake blocked: <reason>`, not once per file.
 A directory/poll error is logged as `filewake poll failed: <error>`.
 
 Files detected as replaced or changed while a push is pending are kept;
