@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readlinkSync, readSync, realpathSync, unlinkSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readlinkSync, readSync, realpathSync, statSync, unlinkSync } from 'node:fs';
 import type { Stats } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 
@@ -57,18 +57,20 @@ function canonicalPath(path: string): string {
   }
 }
 
+export type FileWakeFailure = 'refused' | 'transport' | 'timeout';
+
 export class FileWake {
   private stopped = true;
   private running = false;
   private retryRequested = false;
   private blockedReason: string | null = null;
-  private refusalLogged = new Set<string>();
+  private refusalLogged = new Map<string, Set<FileWakeFailure>>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pending: Promise<void> | undefined;
 
   constructor(
     private readonly config: FileWakeConfig,
-    private readonly push: (text: string, name: string) => Promise<boolean>,
+    private readonly push: (text: string, name: string) => Promise<boolean | FileWakeFailure>,
     private readonly log: (...a: unknown[]) => void,
     private readonly options: { protectedPaths?: readonly string[]; blocked?: () => string | null } = {},
   ) {
@@ -76,10 +78,28 @@ export class FileWake {
       mkdirSync(config.dir, { recursive: true });
       if (!lstatSync(config.dir).isDirectory()) throw new Error('not a directory (symlinks are not supported)');
       const inbox = realpathSync(config.dir);
+      const inboxStat = statSync(config.dir);
       for (const path of options.protectedPaths ?? []) {
         // Check both the named location (where recovery copies go) and a
         // symlink's target (which could itself be a regular inbox file).
-        if (inbox === canonicalPath(dirname(path)) || inbox === dirname(canonicalPath(path))) {
+        let stateDirs: string[];
+        let sameDirectory = false;
+        try {
+          stateDirs = [canonicalPath(dirname(path)), dirname(canonicalPath(path))];
+          sameDirectory = stateDirs.some((dir) => {
+            try {
+              const state = statSync(dir);
+              return state.dev === inboxStat.dev && state.ino === inboxStat.ino;
+            } catch (e) {
+              if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+              return false;
+            }
+          });
+        } catch (e) {
+          this.log(`WARNING: filewake could not resolve protected path ${JSON.stringify(path)}; using lexical state-directory comparison:`, (e as Error).message);
+          stateDirs = [resolve(dirname(path))];
+        }
+        if (sameDirectory || resolve(config.dir) === resolve(dirname(path)) || stateDirs.includes(inbox)) {
           throw new Error(`must be separate from the persisted state directory for ${JSON.stringify(path)}`);
         }
       }
@@ -141,7 +161,7 @@ export class FileWake {
       .filter((entry) => entry.isFile() && !entry.name.startsWith('.') && entry.name.endsWith(ext))
       .map((entry) => entry.name).sort();
     const present = new Set(names);
-    for (const name of this.refusalLogged) if (!present.has(name)) this.refusalLogged.delete(name);
+    for (const name of this.refusalLogged.keys()) if (!present.has(name)) this.refusalLogged.delete(name);
     for (const name of names) {
       if (this.stopped || this.deliveryBlocked()) break;
       const label = `filewake ${JSON.stringify(name)}`;
@@ -174,10 +194,14 @@ export class FileWake {
         } finally {
           closeSync(fd);
         }
-        accepted = await this.push(text, name);
-        if (!accepted) {
-          if (!this.refusalLogged.has(name)) this.log(`${label}: NOT pushed (will retry)`);
-          this.refusalLogged.add(name);
+        const outcome = await this.push(text, name);
+        accepted = outcome === true;
+        if (outcome !== true) {
+          const failure = outcome === false ? 'refused' : outcome;
+          const logged = this.refusalLogged.get(name) ?? new Set<FileWakeFailure>();
+          if (!logged.has(failure)) this.log(`${label}: NOT pushed (will retry)`);
+          logged.add(failure);
+          this.refusalLogged.set(name, logged);
           continue;
         }
         this.refusalLogged.delete(name);

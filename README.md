@@ -104,6 +104,9 @@ the setting named. Startup also rejects an inbox that is the directory of
 the config or reminders file (including path/symlink aliases), regardless of
 the suffix filter, to protect persisted state and recovery copies. Use a
 separate inbox; a dedicated child directory is fine.
+Existing directories are also compared by device/inode identity (including
+bind-mount aliases). If a protected state path cannot be resolved, startup
+warns and falls back to lexical path comparison, still rejecting a collision.
 
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
@@ -146,8 +149,11 @@ Filewake logs filenames, not file text. Per-file messages start with
 
 - `pushed` — accepted and removed.
 - `NOT pushed (will retry)` — refused or failed push; logged once per queued
-  basename until success or a scan sees that basename absent. Retries continue
-  each poll without repeating the refusal or host response logs.
+  basename and outcome class (refused, transport failure, timeout) until success
+  or a scan sees that basename absent. Retries continue each poll without
+  logging host refusal text or host responses. Transport errors and
+  timeouts are always logged separately as `push failed (filewake): <error>`,
+  including the timeout warning that a retry may deliver the file twice.
 - `NOT pushed (will retry): <error>` — could not read a file; this includes
   `not a regular file` if an entry changed type after the directory scan.
 - `pushed; file changed, kept for retry` — accepted, but the file changed.

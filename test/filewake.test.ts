@@ -2,12 +2,13 @@ import test from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { closeSync, existsSync, mkdtempSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
+import fs, { chmodSync, closeSync, existsSync, mkdtempSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { HeartbeatServer } from '../src/server.js';
 import { FileWake, fileWakeConfig } from '../src/filewake.js';
-import type { FileWakeConfig } from '../src/filewake.js';
+import type { FileWakeConfig, FileWakeFailure } from '../src/filewake.js';
 import { serverInProcess, until, useClock } from './in-process-host.js';
 import { logged, origin, POLICY, serverWithHost } from './scripted-host.js';
 import type { PushAnswer } from './scripted-host.js';
@@ -305,16 +306,24 @@ test('an unanswered filewake push times out, keeps the file, and retries on the 
   useClock(t);
   const dir = directory(t);
   let attempts = 0;
-  const h = await serverInProcess(t, () => ++attempts === 1 ? new Promise<PushAnswer>(() => {}) : {}, { fileWake: config(dir) });
+  const h = await serverInProcess(t, () => ++attempts <= 2 ? new Promise<PushAnswer>(() => {}) : {}, { fileWake: config(dir) });
   writeFileSync(join(dir, 'unanswered'), 'text');
   await h.advance(5000);
   await h.pushCount(1);
   await h.advance(30_000);
   await h.logged('filewake "unanswered": NOT pushed (will retry)');
+  assert.match(h.stderr(), /push failed \(filewake\):.*whether it was delivered is unknown, and a retry may deliver it twice/);
   assert.ok(existsSync(join(dir, 'unanswered')));
   assert.equal(h.pushes.length, 1);
   await h.advance(5000);
   await h.pushCount(2);
+  await h.advance(30_000);
+  await turns();
+  assert.equal((h.stderr().match(/may deliver it twice/g) ?? []).length, 2, 'every timeout warns about duplicate delivery');
+  assert.equal((h.stderr().match(/filewake "unanswered": NOT pushed/g) ?? []).length, 1, 'timeout summaries remain bounded');
+  assert.ok(existsSync(join(dir, 'unanswered')));
+  await h.advance(5000);
+  await h.pushCount(3);
   await h.logged('filewake "unanswered": pushed');
   assert.ok(!existsSync(join(dir, 'unanswered')));
 });
@@ -475,6 +484,144 @@ test('the built entrypoint rejects default and custom state directories before c
   assert.equal(readFileSync(join(dir, 'heartbeat-config.json'), 'utf8'), '{}');
   assert.equal(readFileSync(join(dir, 'heartbeat-reminders.json'), 'utf8'), '[]');
   assert.equal(readFileSync(join(dir, 'heartbeat-config.json.unreadable-copy'), 'utf8'), 'kept');
+});
+
+test('an EACCES state directory warns but a separate inbox still starts the built entrypoint',
+  { skip: process.getuid?.() === 0 ? 'root can traverse any directory' : false }, (t) => {
+    const dir = directory(t);
+    const state = join(dir, 'state');
+    mkdirSync(state);
+    writeFileSync(join(state, 'config.json'), '{}');
+    chmodSync(state, 0o000);
+    try {
+      const result = spawnSync(process.execPath, [join(process.cwd(), 'dist/src/index.js'), '--stdio'], {
+        env: { ...process.env, FILEWAKE_DIR: join(dir, 'inbox'), HEARTBEAT_CONFIG_FILE: join(state, 'config.json'),
+          HEARTBEAT_REMINDERS_FILE: join(state, 'reminders.json') },
+        input: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { capabilities: {} } }) + '\n',
+        timeout: 5000,
+      });
+      assert.equal(result.status, 0, String(result.stderr));
+      assert.match(String(result.stderr), /WARNING: filewake could not resolve protected path .*using lexical state-directory comparison: EACCES/);
+      assert.match(String(result.stderr), /couldn't be read \(EACCES/);
+      assert.ok(JSON.parse(String(result.stdout)).result.serverInfo);
+      const linkedConfig = join(dir, 'inbox', 'linked-config');
+      symlinkSync(join(state, 'config.json'), linkedConfig);
+      const collision = spawnSync(process.execPath, [join(process.cwd(), 'dist/src/index.js'), '--stdio'], {
+        env: { ...process.env, FILEWAKE_DIR: join(dir, 'inbox'), HEARTBEAT_CONFIG_FILE: linkedConfig,
+          HEARTBEAT_REMINDERS_FILE: join(state, 'reminders.json') }, input: '', timeout: 5000,
+      });
+      assert.equal(collision.status, 1, String(collision.stderr));
+      assert.match(String(collision.stderr), /WARNING:.*lexical.*EACCES/);
+      assert.match(String(collision.stderr), /must be separate from the persisted state directory/);
+    } finally {
+      chmodSync(state, 0o755);
+    }
+  });
+
+test('unresolvable protected paths fall back to lexical comparison and still refuse collisions', (t) => {
+  const dir = directory(t);
+  const inbox = join(dir, 'inbox');
+  const state = join(dir, 'state');
+  mkdirSync(inbox);
+  mkdirSync(state);
+  const logs: string[] = [];
+  for (const parent of [state, inbox]) {
+    const path = join(parent, 'loop');
+    symlinkSync(path, path);
+    const construct = () => new FileWake(config(inbox), async () => true, (...a) => logs.push(a.join(' ')),
+      { protectedPaths: [path] });
+    if (parent === state) assert.doesNotThrow(construct);
+    else assert.throws(construct, /must be separate from the persisted state directory/);
+  }
+  assert.equal(logs.length, 2);
+  assert.ok(logs.every((line) => /WARNING:.*lexical.*ELOOP/.test(line)));
+});
+
+test('the state guard compares both dev and ino for directory aliases that realpath does not resolve', (t) => {
+  const dir = directory(t);
+  const inbox = join(dir, 'inbox');
+  const state = join(dir, 'state');
+  mkdirSync(inbox);
+  mkdirSync(state);
+  const original = fs.statSync;
+  const inboxStat = original(inbox);
+  const aliasStat = original(state);
+  // Model a bind mount without requiring mount privileges in the test suite.
+  const mocked = t.mock.method(fs, 'statSync', (path: fs.PathLike) => path === state ? aliasStat : original(path));
+  syncBuiltinESMExports();
+  try {
+    const construct = () => new FileWake(config(inbox), async () => true, () => {},
+      { protectedPaths: [join(state, 'config.json')] });
+    aliasStat.dev = inboxStat.dev;
+    aliasStat.ino = inboxStat.ino;
+    assert.throws(construct, /must be separate from the persisted state directory/);
+    aliasStat.dev++;
+    assert.doesNotThrow(construct, 'inode equality on a different device is not a collision');
+    aliasStat.dev = inboxStat.dev;
+    aliasStat.ino++;
+    assert.doesNotThrow(construct, 'device equality with a different inode is not a collision');
+  } finally {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test('failure summaries dedup by basename and outcome class and reset after absence or success', async (t) => {
+  const dir = directory(t);
+  const path = join(dir, 'note');
+  writeFileSync(path, 'private body');
+  const logs: string[] = [];
+  let outcome: boolean | FileWakeFailure = false;
+  const wake = new FileWake(config(dir), async () => outcome, (...a) => logs.push(a.join(' ')));
+  t.after(() => wake.stop());
+  wake.start();
+  await turns();
+  for (const failure of ['refused', 'transport', 'timeout', 'refused', 'transport', 'timeout'] as const) {
+    outcome = failure;
+    wake.retry();
+    await turns();
+  }
+  assert.equal(logs.length, 3, 'one summary per class, not one per basename');
+  rmSync(path);
+  wake.retry();
+  await turns();
+  writeFileSync(path, 'new body');
+  wake.retry();
+  await turns();
+  assert.equal(logs.length, 4, 'absence resets all classes');
+  outcome = true;
+  wake.retry();
+  await turns();
+  assert.ok(!existsSync(path));
+  writeFileSync(path, 'another body');
+  outcome = 'timeout';
+  wake.retry();
+  await turns();
+  assert.equal(logs.length, 6, 'success resets all classes');
+});
+
+test('a refusal followed by transport failures logs the new outcome and every transport diagnostic without host refusal text', async (t) => {
+  useClock(t);
+  const dir = directory(t);
+  writeFileSync(join(dir, 'note'), 'private body');
+  let refuse = true;
+  const h = await serverInProcess(t, () => refuse
+    ? { result: { accepted: false, reason: 'private refusal' } }
+    : { error: [-32000, 'transport exploded'] }, { fileWake: config(dir) });
+  await h.logged('filewake "note": NOT pushed (will retry)');
+  const refusedLog = h.stderr();
+  await h.advance(5000);
+  assert.equal(h.stderr(), refusedLog, 'repeated host refusal stays quiet');
+  refuse = false;
+  await h.advance(5000);
+  await h.logged('push failed (filewake): the push failed: transport exploded');
+  await turns();
+  assert.equal((h.stderr().match(/filewake "note": NOT pushed/g) ?? []).length, 2);
+  await h.advance(5000);
+  await turns();
+  assert.equal((h.stderr().match(/push failed \(filewake\):.*transport exploded/g) ?? []).length, 2);
+  assert.equal((h.stderr().match(/filewake "note": NOT pushed/g) ?? []).length, 2);
+  assert.doesNotMatch(h.stderr(), /private body|private refusal/);
 });
 
 test('a leading UTF-8 BOM is stripped before the character cap, including a one-emoji budget', async (t) => {

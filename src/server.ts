@@ -1,4 +1,4 @@
-import { McplConnection, method } from '@animalabs/mcpl-core';
+import { ConnectionTimeoutError, McplConnection, method } from '@animalabs/mcpl-core';
 import type {
   McplInitializeParams, PushEventParams, JsonRpcId,
 } from '@animalabs/mcpl-core';
@@ -7,8 +7,9 @@ import { createRequire } from 'node:module';
 import { formatAgentDateTime } from './timezone.js';
 import { sendSilentWithFallback } from './silent-delivery.js';
 import { sendPush } from './push.js';
+import type { PushOutcome } from './push.js';
 import { FileWake } from './filewake.js';
-import type { FileWakeConfig } from './filewake.js';
+import type { FileWakeConfig, FileWakeFailure } from './filewake.js';
 import { formatReminderText } from './reminder-text.js';
 import { FIRST_REMINDER_TIME, LAST_REMINDER_TIME, canHoldTime, parseReminderTime } from './reminder-time.js';
 import { callAt } from './timer.js';
@@ -179,8 +180,11 @@ export class HeartbeatServer {
     this.timeZone = options.timeZone;
     this.log = options.log ?? ((...a: unknown[]) => console.error('[heartbeat-mcpl]', ...a));
     if (options.fileWake) {
-      this.fileWake = new FileWake(options.fileWake, (text, name) => new Promise<boolean>((resolve) => {
-        const sent = this.emitPush(text, { source: 'filewake', file: name }, 'filewake', (refusal) => resolve(refusal === null), false);
+      this.fileWake = new FileWake(options.fileWake, (text, name) => new Promise<boolean | FileWakeFailure>((resolve) => {
+        const sent = this.emitPush(text, { source: 'filewake', file: name }, 'filewake', (refusal, outcome) => {
+          resolve('error' in outcome ? outcome.error instanceof ConnectionTimeoutError ? 'timeout' : 'transport'
+            : refusal === null ? true : 'refused');
+        }, false);
         if (!sent) resolve(false);
       }), this.log, {
         protectedPaths: [this.configPath, this.remindersPath],
@@ -560,18 +564,17 @@ export class HeartbeatServer {
     else this.log('push response:', JSON.stringify(r));
   }
 
-  private emitPush(text: string, origin: Record<string, unknown>, kind: string, onSettled?: (refusal: string | null) => void, logOutcome = true): boolean {
+  private emitPush(text: string, origin: Record<string, unknown>, kind: string, onSettled?: (refusal: string | null, outcome: PushOutcome) => void, logOutcome = true): boolean {
     const conn = this.conn;
     if (!conn) return false;
     const blocked = this.pushBlocked();
     if (blocked) { if (logOutcome) this.log(`suppressed ${kind} push/event — ${blocked.log}`); return false; }
     void sendPush(conn, this.pushParams(kind, origin, [{ type: 'text', text }])).then((outcome) => {
-      // Filewake owns its bounded per-file outcome logging.
-      if (logOutcome) {
-        if ('error' in outcome) this.log(`push failed (${kind}):`, outcome.error.message);
-        else this.logPushResult(outcome.result, kind);
-      }
-      onSettled?.(outcome.refusal);
+      // Server-side failures must stay visible, including timeout delivery
+      // uncertainty. Filewake bounds summaries and omits host refusal text.
+      if ('error' in outcome) this.log(`push failed (${kind}):`, logOutcome ? outcome.error.message : outcome.refusal);
+      else if (logOutcome) this.logPushResult(outcome.result, kind);
+      onSettled?.(outcome.refusal, outcome);
     }).catch((e) => this.log(`handling the host's answer to a ${kind} push failed:`, e));
     return true;
   }
