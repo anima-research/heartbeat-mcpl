@@ -120,10 +120,10 @@ test('an enabled list that omits us is treated as not enabled', () => {
   assert.equal(stateOf(grantOf(['tools', 'pushEvents'], { enabled: ['heartbeat'] })).active, true);
 });
 
-test('a full grant yields an accepted receipt in full mode with nothing unavailable', () => {
+test('a full grant yields an accepted receipt with no mode and nothing unavailable', () => {
   const receipt = buildReceipt({ heartbeat: HEARTBEAT }, grantOf(['tools', 'pushEvents']));
   assert.equal(receipt.accepted, true);
-  assert.equal(receipt.mode, 'full');
+  assert.equal(receipt.mode, undefined, `no mode when nothing degraded (${JSON.stringify(receipt)})`);
   assert.deepEqual(receipt.unavailableFeatures, []);
 });
 

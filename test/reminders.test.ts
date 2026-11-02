@@ -26,7 +26,7 @@ test('the reminder scheduler, end to end: no wake before policy, one-shot, recur
     'its status names the reason in plain words');
   const receipt = await h.request('featureSets/update', POLICY) as { accepted?: unknown; mode?: unknown; unavailableFeatures?: unknown };
   assert.ok(receipt.accepted === true, `receipt accepted (${JSON.stringify(receipt)})`);
-  assert.ok(receipt.mode === 'full', `mode=full with the full grant (${String(receipt.mode)})`);
+  assert.ok(!('mode' in receipt), `no mode with the full grant (${JSON.stringify(receipt)})`);
   assert.ok(Array.isArray(receipt.unavailableFeatures) && receipt.unavailableFeatures.length === 0, 'nothing reported unavailable');
   assert.ok(/Heartbeat fired/.test(await h.call('heartbeat_trigger')), 'trigger after policy delivers the wake');
   await h.until(() => h.pushes.some((p) => origin(p).source === 'heartbeat'), () => 'the triggered heartbeat never reached the host');
